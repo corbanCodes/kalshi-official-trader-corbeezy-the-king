@@ -2,17 +2,16 @@
 """
 15-Minute Trading Strategy - Main Entry Point
 
-Usage:
-    python main.py run          # Start live trading
-    python main.py paper        # Paper trading mode
-    python main.py status       # Show current status
-    python main.py setup        # Generate API keys
-    python main.py test         # Test connection
-    python main.py calc         # Interactive calculator
+Runs trading bot with web dashboard on PORT (default 8080)
 """
 
 import sys
 import os
+import json
+import threading
+import time
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from datetime import datetime
 
 # Add src to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -20,70 +19,211 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src import (
     Trader,
     load_config,
-    generate_key_pair,
     KalshiClient,
     MartingaleCalculator,
     MarketScanner,
 )
 
+# Global state for web dashboard
+DASHBOARD_STATE = {
+    "status": "starting",
+    "bankroll": 0,
+    "today_profit": 0,
+    "total_trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "consecutive_losses": 0,
+    "last_trade": None,
+    "last_update": None,
+    "recent_trades": [],
+    "error": None,
+}
+
+
+class DashboardHandler(BaseHTTPRequestHandler):
+    """HTTP handler for the monitoring dashboard."""
+
+    def log_message(self, format, *args):
+        pass  # Suppress logging
+
+    def do_GET(self):
+        if self.path == "/" or self.path == "/dashboard":
+            self.send_dashboard()
+        elif self.path == "/api/status":
+            self.send_json(DASHBOARD_STATE)
+        elif self.path == "/health":
+            self.send_json({"status": "ok"})
+        else:
+            self.send_error(404)
+
+    def send_json(self, data):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
+
+    def send_dashboard(self):
+        html = """<!DOCTYPE html>
+<html>
+<head>
+    <title>Trading Bot Dashboard</title>
+    <meta http-equiv="refresh" content="10">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: monospace; background: #0a0a0a; color: #e0e0e0; padding: 40px; }
+        h1 { color: #6bcb77; margin-bottom: 20px; }
+        .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin: 20px 0; }
+        .card { background: #1a1a1a; border: 1px solid #333; border-radius: 10px; padding: 20px; text-align: center; }
+        .card .value { font-size: 2rem; font-weight: bold; color: #6bcb77; }
+        .card .label { color: #888; margin-top: 5px; }
+        .card.warn .value { color: #ffd93d; }
+        .card.danger .value { color: #ff6b6b; }
+        .status { padding: 10px 20px; border-radius: 20px; display: inline-block; margin-bottom: 20px; }
+        .status.running { background: rgba(107,203,119,0.2); color: #6bcb77; }
+        .status.error { background: rgba(255,107,107,0.2); color: #ff6b6b; }
+        .trades { background: #1a1a1a; border-radius: 10px; padding: 20px; margin-top: 20px; }
+        .trade { padding: 10px; border-bottom: 1px solid #333; display: flex; justify-content: space-between; }
+        .trade.win { border-left: 3px solid #6bcb77; }
+        .trade.loss { border-left: 3px solid #ff6b6b; }
+        .updated { color: #666; margin-top: 20px; font-size: 0.8rem; }
+    </style>
+</head>
+<body>
+    <h1>15-MINUTE STRATEGY BOT</h1>
+    <div class="status STATUS_CLASS">STATUS_TEXT</div>
+
+    <div class="grid">
+        <div class="card">
+            <div class="value">$BANKROLL</div>
+            <div class="label">Bankroll</div>
+        </div>
+        <div class="card">
+            <div class="value">$TODAY_PROFIT</div>
+            <div class="label">Today P&L</div>
+        </div>
+        <div class="card">
+            <div class="value">WINS/LOSSES</div>
+            <div class="label">W/L (WIN_RATE%)</div>
+        </div>
+        <div class="card CONSEC_CLASS">
+            <div class="value">CONSECUTIVE</div>
+            <div class="label">Consecutive Losses</div>
+        </div>
+    </div>
+
+    <div class="trades">
+        <h3 style="margin-bottom: 15px; color: #888;">Recent Trades</h3>
+        TRADES_HTML
+    </div>
+
+    <p class="updated">Last updated: LAST_UPDATE (auto-refreshes every 10s)</p>
+</body>
+</html>"""
+
+        state = DASHBOARD_STATE
+        win_rate = (state["wins"] / (state["wins"] + state["losses"]) * 100) if (state["wins"] + state["losses"]) > 0 else 0
+
+        trades_html = ""
+        for t in state.get("recent_trades", [])[-10:]:
+            cls = "win" if t.get("profit", 0) > 0 else "loss"
+            trades_html += f'<div class="trade {cls}"><span>{t.get("time", "")}</span><span>${t.get("profit", 0):+.2f}</span></div>'
+
+        if not trades_html:
+            trades_html = '<div class="trade">No trades yet</div>'
+
+        status_class = "running" if state["status"] == "running" else "error"
+        status_text = state["status"].upper()
+        if state.get("error"):
+            status_text += f": {state['error']}"
+
+        consec_class = "danger" if state["consecutive_losses"] >= 2 else ("warn" if state["consecutive_losses"] == 1 else "")
+
+        html = html.replace("STATUS_CLASS", status_class)
+        html = html.replace("STATUS_TEXT", status_text)
+        html = html.replace("BANKROLL", f"{state['bankroll']:.2f}")
+        html = html.replace("TODAY_PROFIT", f"{state['today_profit']:+.2f}")
+        html = html.replace("WINS/LOSSES", f"{state['wins']}/{state['losses']}")
+        html = html.replace("WIN_RATE", f"{win_rate:.1f}")
+        html = html.replace("CONSECUTIVE", str(state["consecutive_losses"]))
+        html = html.replace("CONSEC_CLASS", consec_class)
+        html = html.replace("TRADES_HTML", trades_html)
+        html = html.replace("LAST_UPDATE", state.get("last_update", "never"))
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.end_headers()
+        self.wfile.write(html.encode())
+
+
+def run_web_server(port):
+    """Run the monitoring web server."""
+    server = HTTPServer(("", port), DashboardHandler)
+    print(f"Dashboard running on port {port}")
+    server.serve_forever()
+
+
+def update_dashboard(trader):
+    """Update dashboard state from trader."""
+    DASHBOARD_STATE.update({
+        "status": "running",
+        "bankroll": trader.state.bankroll,
+        "today_profit": trader.state.total_profit,
+        "total_trades": trader.state.total_trades,
+        "wins": trader.state.total_wins,
+        "losses": trader.state.total_losses,
+        "consecutive_losses": trader.state.consecutive_losses,
+        "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    })
+
 
 def cmd_run():
-    """Start live trading."""
+    """Start live trading with web dashboard."""
+    port = int(os.environ.get("PORT", 8080))
+
     print("=" * 60)
     print("  15-MINUTE STRATEGY - LIVE TRADING")
+    print(f"  Dashboard: http://localhost:{port}")
     print("=" * 60)
-    print()
-    print("WARNING: This will place REAL orders with REAL money!")
-    print()
 
-    confirm = input("Type 'START' to begin: ")
-    if confirm != "START":
-        print("Aborted.")
-        return
+    # Start web server in background
+    web_thread = threading.Thread(target=run_web_server, args=(port,), daemon=True)
+    web_thread.start()
 
-    trader = Trader()
-    trader.run_continuous()
+    # Give server time to start
+    time.sleep(1)
 
+    try:
+        trader = Trader()
+        DASHBOARD_STATE["status"] = "running"
+        DASHBOARD_STATE["bankroll"] = trader.state.bankroll
 
-def cmd_paper():
-    """Paper trading mode."""
-    trader = Trader()
-    trader.paper_trade(num_trades=20)
+        # Run trading loop with dashboard updates
+        while trader.can_trade():
+            update_dashboard(trader)
 
+            traded = trader.run_once()
 
-def cmd_status():
-    """Show current status."""
-    trader = Trader()
-    trader.show_status()
+            if traded:
+                # Record trade for dashboard
+                DASHBOARD_STATE["recent_trades"].append({
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "profit": trader.state.total_profit,
+                })
+                update_dashboard(trader)
+                time.sleep(2)
+            else:
+                time.sleep(5)
 
+        DASHBOARD_STATE["status"] = "stopped"
 
-def cmd_setup():
-    """Generate API keys."""
-    print("Generating RSA key pair for Kalshi API...")
-    print()
-
-    save_path = input("Save keys to directory [.]: ").strip() or "."
-
-    pub, priv = generate_key_pair(save_path)
-
-    print()
-    print("=" * 60)
-    print("SETUP INSTRUCTIONS")
-    print("=" * 60)
-    print()
-    print("1. Go to https://kalshi.com/account/api-keys")
-    print("2. Click 'Create API Key'")
-    print("3. Paste this PUBLIC key:")
-    print()
-    print(pub)
-    print()
-    print("4. Copy the API Key ID you receive")
-    print("5. Create a .env file with:")
-    print()
-    print("   KALSHI_API_KEY_ID=your_key_id_here")
-    print(f"   KALSHI_PRIVATE_KEY_PATH={save_path}/private_key.pem")
-    print()
-    print("IMPORTANT: Keep private_key.pem secure!")
+    except Exception as e:
+        DASHBOARD_STATE["status"] = "error"
+        DASHBOARD_STATE["error"] = str(e)
+        print(f"Error: {e}")
+        # Keep server running so you can see the error
+        while True:
+            time.sleep(60)
 
 
 def cmd_test():
@@ -94,15 +234,12 @@ def cmd_test():
         config = load_config()
         client = KalshiClient(config.kalshi)
 
-        # Test exchange status
         status = client.get_exchange_status()
         print(f"Exchange status: {status}")
 
-        # Test balance
         balance = client.get_balance_dollars()
         print(f"Account balance: ${balance:.2f}")
 
-        # Test markets
         markets = client.get_markets(limit=5)
         print(f"Found {len(markets.get('markets', []))} markets")
 
@@ -110,82 +247,18 @@ def cmd_test():
 
     except Exception as e:
         print(f"Connection failed: {e}")
-        print("\nCheck your .env file and API keys.")
-
-
-def cmd_calc():
-    """Interactive martingale calculator."""
-    print("=" * 60)
-    print("  MARTINGALE CALCULATOR")
-    print("=" * 60)
-    print()
-
-    while True:
-        try:
-            bankroll = float(input("Bankroll ($): ") or "250")
-            entry_price = int(input("Entry price (cents, 80-90): ") or "85")
-            target = float(input("Target profit per trade ($): ") or "1.0")
-
-            calc = MartingaleCalculator(target_profit=target)
-            calc.print_sequence(bankroll, entry_price)
-
-            # Show fee breakdown
-            print(f"\nFee at {entry_price}c: ${MarketScanner.calc_fee(entry_price):.2f}")
-            print(f"Net profit per contract: ${MarketScanner.calc_net_profit(entry_price):.2f}")
-            print(f"Return per win: {MarketScanner.calc_return_pct(entry_price):.1f}%")
-
-            print()
-            again = input("Calculate again? [y/N]: ").lower()
-            if again != "y":
-                break
-
-        except ValueError:
-            print("Invalid input, try again.")
-        except KeyboardInterrupt:
-            break
-
-
-def cmd_scan():
-    """Scan current market opportunities."""
-    print("Scanning markets for opportunities...")
-
-    config = load_config()
-    client = KalshiClient(config.kalshi)
-    scanner = MarketScanner(client)
-
-    opportunities = scanner.scan_all_markets()
-
-    if not opportunities:
-        print("No opportunities found in 80-90c range")
-        return
-
-    print(f"\nFound {len(opportunities)} opportunities:\n")
-    for opp in opportunities[:10]:
-        print(f"  {opp}")
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(__doc__)
-        return
+    cmd = sys.argv[1].lower() if len(sys.argv) > 1 else "run"
 
-    cmd = sys.argv[1].lower()
-
-    commands = {
-        "run": cmd_run,
-        "paper": cmd_paper,
-        "status": cmd_status,
-        "setup": cmd_setup,
-        "test": cmd_test,
-        "calc": cmd_calc,
-        "scan": cmd_scan,
-    }
-
-    if cmd in commands:
-        commands[cmd]()
+    if cmd == "run":
+        cmd_run()
+    elif cmd == "test":
+        cmd_test()
     else:
         print(f"Unknown command: {cmd}")
-        print(__doc__)
+        print("Usage: python main.py [run|test]")
 
 
 if __name__ == "__main__":
