@@ -12,6 +12,7 @@ import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
+from urllib.parse import parse_qs
 
 # Add src to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -26,7 +27,8 @@ from src import (
 
 # Global state for web dashboard
 DASHBOARD_STATE = {
-    "status": "starting",
+    "status": "stopped",
+    "trading_enabled": False,
     "bankroll": 0,
     "today_profit": 0,
     "total_trades": 0,
@@ -56,6 +58,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def do_POST(self):
+        if self.path == "/api/start":
+            DASHBOARD_STATE["trading_enabled"] = True
+            DASHBOARD_STATE["status"] = "running"
+            DASHBOARD_STATE["error"] = None
+            self.send_json({"success": True, "trading": True})
+        elif self.path == "/api/stop":
+            DASHBOARD_STATE["trading_enabled"] = False
+            DASHBOARD_STATE["status"] = "stopped"
+            self.send_json({"success": True, "trading": False})
+        else:
+            self.send_error(404)
+
     def send_json(self, data):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -68,19 +83,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
 <html>
 <head>
     <title>Trading Bot Dashboard</title>
-    <meta http-equiv="refresh" content="10">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: monospace; background: #0a0a0a; color: #e0e0e0; padding: 40px; }
         h1 { color: #6bcb77; margin-bottom: 20px; }
+        .controls { margin-bottom: 20px; display: flex; gap: 10px; align-items: center; }
+        .btn { padding: 12px 30px; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; font-family: monospace; font-weight: bold; }
+        .btn-start { background: #6bcb77; color: #000; }
+        .btn-start:hover { background: #5ab868; }
+        .btn-stop { background: #ff6b6b; color: #fff; }
+        .btn-stop:hover { background: #e55555; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
         .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin: 20px 0; }
         .card { background: #1a1a1a; border: 1px solid #333; border-radius: 10px; padding: 20px; text-align: center; }
         .card .value { font-size: 2rem; font-weight: bold; color: #6bcb77; }
         .card .label { color: #888; margin-top: 5px; }
         .card.warn .value { color: #ffd93d; }
         .card.danger .value { color: #ff6b6b; }
-        .status { padding: 10px 20px; border-radius: 20px; display: inline-block; margin-bottom: 20px; }
+        .status { padding: 10px 20px; border-radius: 20px; display: inline-block; }
         .status.running { background: rgba(107,203,119,0.2); color: #6bcb77; }
+        .status.stopped { background: rgba(136,136,136,0.2); color: #888; }
         .status.error { background: rgba(255,107,107,0.2); color: #ff6b6b; }
         .trades { background: #1a1a1a; border-radius: 10px; padding: 20px; margin-top: 20px; }
         .trade { padding: 10px; border-bottom: 1px solid #333; display: flex; justify-content: space-between; }
@@ -91,7 +113,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
 </head>
 <body>
     <h1>15-MINUTE STRATEGY BOT</h1>
-    <div class="status STATUS_CLASS">STATUS_TEXT</div>
+
+    <div class="controls">
+        <button class="btn btn-start" id="startBtn" onclick="startTrading()">START TRADING</button>
+        <button class="btn btn-stop" id="stopBtn" onclick="stopTrading()" disabled>STOP</button>
+        <span class="status STATUS_CLASS" id="statusBadge">STATUS_TEXT</span>
+    </div>
 
     <div class="grid">
         <div class="card">
@@ -117,7 +144,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
         TRADES_HTML
     </div>
 
-    <p class="updated">Last updated: LAST_UPDATE (auto-refreshes every 10s)</p>
+    <p class="updated">Last updated: LAST_UPDATE</p>
+
+    <script>
+        function startTrading() {
+            fetch('/api/start', {method: 'POST'})
+                .then(r => r.json())
+                .then(d => { if(d.success) location.reload(); });
+        }
+        function stopTrading() {
+            fetch('/api/stop', {method: 'POST'})
+                .then(r => r.json())
+                .then(d => { if(d.success) location.reload(); });
+        }
+        // Auto-refresh every 5 seconds
+        setTimeout(() => location.reload(), 5000);
+    </script>
 </body>
 </html>"""
 
@@ -132,10 +174,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not trades_html:
             trades_html = '<div class="trade">No trades yet</div>'
 
-        status_class = "running" if state["status"] == "running" else "error"
+        if state["status"] == "running":
+            status_class = "running"
+        elif state.get("error"):
+            status_class = "error"
+        else:
+            status_class = "stopped"
+
         status_text = state["status"].upper()
         if state.get("error"):
             status_text += f": {state['error']}"
+
+        # Button states based on trading status
+        if state["trading_enabled"]:
+            html = html.replace('id="startBtn"', 'id="startBtn" disabled')
+            html = html.replace('id="stopBtn" disabled', 'id="stopBtn"')
 
         consec_class = "danger" if state["consecutive_losses"] >= 2 else ("warn" if state["consecutive_losses"] == 1 else "")
 
@@ -166,7 +219,6 @@ def run_web_server(port):
 def update_dashboard(trader):
     """Update dashboard state from trader."""
     DASHBOARD_STATE.update({
-        "status": "running",
         "bankroll": trader.state.bankroll,
         "today_profit": trader.state.total_profit,
         "total_trades": trader.state.total_trades,
@@ -195,18 +247,29 @@ def cmd_run():
 
     try:
         trader = Trader()
-        DASHBOARD_STATE["status"] = "running"
         DASHBOARD_STATE["bankroll"] = trader.state.bankroll
+        DASHBOARD_STATE["status"] = "stopped"
+        DASHBOARD_STATE["last_update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Run trading loop with dashboard updates
+        print(f"Bankroll: ${trader.state.bankroll:.2f}")
+        print("Waiting for START command from dashboard...")
+
+        # Main loop
         while True:
             update_dashboard(trader)
 
+            # Check if trading is enabled
+            if not DASHBOARD_STATE["trading_enabled"]:
+                DASHBOARD_STATE["status"] = "stopped"
+                time.sleep(2)
+                continue
+
+            # Check if can trade
             if not trader.can_trade():
                 DASHBOARD_STATE["status"] = "paused"
                 DASHBOARD_STATE["error"] = f"Bankroll too low (${trader.state.bankroll:.2f})"
-                time.sleep(10)
-                trader.refresh_bankroll()  # Check if funded
+                time.sleep(5)
+                trader.refresh_bankroll()
                 continue
 
             DASHBOARD_STATE["status"] = "running"
@@ -215,7 +278,6 @@ def cmd_run():
             traded = trader.run_once()
 
             if traded:
-                # Record trade for dashboard
                 DASHBOARD_STATE["recent_trades"].append({
                     "time": datetime.now().strftime("%H:%M:%S"),
                     "profit": trader.state.total_profit,
@@ -229,7 +291,6 @@ def cmd_run():
         DASHBOARD_STATE["status"] = "error"
         DASHBOARD_STATE["error"] = str(e)
         print(f"Error: {e}")
-        # Keep server running so you can see the error
         while True:
             time.sleep(60)
 
