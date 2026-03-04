@@ -78,9 +78,9 @@ class Trader:
         self.state_path = self.config.data_dir / "trading_state.json"
         self.state = TradingState.load(self.state_path)
 
-        if self.state.bankroll == 0:
-            self.state.bankroll = self.config.starting_bankroll
-            self.state.session_start = datetime.now(timezone.utc).isoformat()
+        # Always fetch real balance from Kalshi
+        self.refresh_bankroll()
+        self.state.session_start = datetime.now(timezone.utc).isoformat()
 
         # Logging
         self.log_path = self.config.logs_dir / f"trades_{datetime.now().strftime('%Y%m%d')}.json"

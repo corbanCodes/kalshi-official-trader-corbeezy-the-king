@@ -199,8 +199,18 @@ def cmd_run():
         DASHBOARD_STATE["bankroll"] = trader.state.bankroll
 
         # Run trading loop with dashboard updates
-        while trader.can_trade():
+        while True:
             update_dashboard(trader)
+
+            if not trader.can_trade():
+                DASHBOARD_STATE["status"] = "paused"
+                DASHBOARD_STATE["error"] = f"Bankroll too low (${trader.state.bankroll:.2f})"
+                time.sleep(10)
+                trader.refresh_bankroll()  # Check if funded
+                continue
+
+            DASHBOARD_STATE["status"] = "running"
+            DASHBOARD_STATE["error"] = None
 
             traded = trader.run_once()
 
@@ -214,8 +224,6 @@ def cmd_run():
                 time.sleep(2)
             else:
                 time.sleep(5)
-
-        DASHBOARD_STATE["status"] = "stopped"
 
     except Exception as e:
         DASHBOARD_STATE["status"] = "error"
