@@ -50,23 +50,25 @@ class KalshiAuth:
         Args:
             method: HTTP method (GET, POST, etc.)
             path: API path (e.g., /portfolio/balance)
-            body: Request body as string (empty for GET)
+            body: Request body as string (ignored - not part of signature)
 
         Returns:
             Dictionary with auth headers
         """
         timestamp = str(int(time.time() * 1000))
 
-        # Create message to sign: timestamp + method + path + body
-        message = f"{timestamp}{method.upper()}{path}{body}"
+        # Create message to sign: timestamp + method + path (NO BODY per Kalshi docs)
+        # Also strip query parameters from path
+        path_without_query = path.split('?')[0]
+        message = f"{timestamp}{method.upper()}{path_without_query}"
         message_bytes = message.encode("utf-8")
 
-        # Sign with RSA-PSS
+        # Sign with RSA-PSS using DIGEST_LENGTH per Kalshi docs
         signature = self.private_key.sign(
             message_bytes,
             padding.PSS(
                 mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH
+                salt_length=padding.PSS.DIGEST_LENGTH
             ),
             hashes.SHA256()
         )
