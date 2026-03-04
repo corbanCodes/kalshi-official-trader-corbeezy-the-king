@@ -23,6 +23,7 @@ class TradingOpportunity:
     minutes_remaining: float
     net_profit_per_contract: float  # dollars
     return_percentage: float
+    floor_strike: float  # BTC price to beat for settlement
 
     def __str__(self):
         return (
@@ -161,6 +162,7 @@ class MarketScanner:
                 minutes_remaining=minutes_remaining,
                 net_profit_per_contract=self.calc_net_profit(market.yes_ask),
                 return_percentage=self.calc_return_pct(market.yes_ask),
+                floor_strike=market.floor_strike,
             )
 
         # Check NO side
@@ -177,6 +179,7 @@ class MarketScanner:
                 minutes_remaining=minutes_remaining,
                 net_profit_per_contract=self.calc_net_profit(market.no_ask),
                 return_percentage=self.calc_return_pct(market.no_ask),
+                floor_strike=market.floor_strike,
             )
 
         # Neither in range - log for monitoring

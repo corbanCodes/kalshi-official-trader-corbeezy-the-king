@@ -12,9 +12,11 @@ from typing import Optional
 
 from .config import AppConfig, load_config
 from .kalshi_client import KalshiClient
+from .kraken import KrakenClient
 from .market_scanner import MarketScanner, TradingOpportunity
 from .martingale import MartingaleCalculator, MartingaleBet
 from .trade_executor import TradeExecutor, TradeRecord, TradeStatus
+from .trade_tracker import TradeTracker, TradeRecord as TrackedTrade
 
 
 @dataclass
@@ -73,9 +75,15 @@ class Trader:
             limit_offset=self.config.trading.limit_order_offset,
         )
 
+        # Trade tracker for exact payout calculations with Kraken settlement
+        self.tracker = TradeTracker(data_dir=self.config.data_dir)
+
         # State
         self.state_path = self.config.data_dir / "trading_state.json"
         self.state = TradingState.load(self.state_path)
+
+        # Sync martingale state from tracker (it's persisted)
+        self._sync_martingale_from_tracker()
 
         # Always fetch real balance from Kalshi
         self.refresh_bankroll()
@@ -89,6 +97,20 @@ class Trader:
         timestamp = datetime.now().strftime("%H:%M:%S")
         prefix = {"INFO": "[*]", "TRADE": "[$]", "WIN": "[+]", "LOSS": "[-]", "ERROR": "[!]", "WARN": "[?]"}
         print(f"{timestamp} {prefix.get(level, '[*]')} {message}")
+
+    def _sync_martingale_from_tracker(self):
+        """Sync the MartingaleCalculator state from the TradeTracker's persisted state."""
+        tracker_state = self.tracker.martingale
+        self.martingale.state.in_recovery = tracker_state.in_recovery
+        self.martingale.state.total_loss_dollars = tracker_state.total_loss_cents / 100
+        # consecutive_losses is tracked in self.state, sync it too
+        self.state.consecutive_losses = tracker_state.consecutive_losses
+        if tracker_state.in_recovery:
+            self.log(
+                f"Loaded recovery state: {tracker_state.consecutive_losses} losses, "
+                f"recovering ${tracker_state.total_loss_cents/100:.2f}",
+                "WARN"
+            )
 
     def refresh_bankroll(self):
         """Refresh bankroll from Kalshi account."""
@@ -131,8 +153,8 @@ class Trader:
 
         return bet
 
-    def execute_trade(self, opportunity: TradingOpportunity, bet: MartingaleBet) -> Optional[TradeRecord]:
-        """Execute a single trade."""
+    def execute_trade(self, opportunity: TradingOpportunity, bet: MartingaleBet) -> Optional[tuple]:
+        """Execute a single trade. Returns (TradeRecord, TrackedTrade) tuple."""
         self.log(
             f"EXECUTING: {opportunity.side.upper()} {opportunity.ticker} @ {opportunity.entry_price}c | "
             f"{bet.contracts} contracts | ${bet.cost_dollars:.2f}",
@@ -160,45 +182,78 @@ class Trader:
 
         self.log(f"Filled @ {trade.actual_fill_price}c | Waiting for settlement...")
 
-        return trade
+        # Create tracked trade record with exact details
+        bankroll_cents = int(self.state.bankroll * 100)
+        tracked = self.tracker.create_trade(
+            ticker=opportunity.ticker,
+            side=opportunity.side,
+            contracts=trade.filled_contracts,
+            intended_price=opportunity.entry_price,
+            actual_fill_price=trade.actual_fill_price,
+            floor_strike=opportunity.floor_strike,
+            close_time=opportunity.close_time.isoformat(),
+            bankroll_cents=bankroll_cents,
+        )
 
-    def process_settlement(self, trade: TradeRecord):
-        """Process trade settlement and update state."""
-        # Wait for settlement
-        trade = self.executor.wait_for_settlement(trade, timeout_seconds=600)
+        return (trade, tracked)
 
-        if trade.status == TradeStatus.SETTLED_WIN:
+    def process_settlement(self, trade: TradeRecord, tracked: TrackedTrade):
+        """Process trade settlement using Kraken for instant determination."""
+        # Wait for market close time
+        close_time = datetime.fromisoformat(tracked.close_time.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        wait_seconds = (close_time - now).total_seconds()
+
+        if wait_seconds > 0:
+            self.log(f"Waiting {wait_seconds:.0f}s for market close...")
+            time.sleep(wait_seconds + 2)  # Add 2 second buffer
+
+        # Get BTC price from Kraken for instant settlement
+        btc_price = KrakenClient.get_btc_price()
+
+        if btc_price is None:
+            self.log("Could not get BTC price from Kraken, falling back to Kalshi", "WARN")
+            # Fallback to old method
+            trade = self.executor.wait_for_settlement(trade, timeout_seconds=600)
+            if trade.status == TradeStatus.SETTLED_WIN:
+                btc_price = tracked.floor_strike + 1  # Assume win
+            else:
+                btc_price = tracked.floor_strike - 1  # Assume loss
+
+        # Get actual bankroll from Kalshi
+        self.refresh_bankroll()
+        bankroll_after_cents = int(self.state.bankroll * 100)
+
+        # Settle the tracked trade with exact calculations
+        self.tracker.settle_trade(tracked, btc_price, bankroll_after_cents)
+
+        # Log result with exact details
+        slippage = tracked.actual_fill_price - tracked.intended_price
+        if tracked.won:
             self.log(
-                f"WIN: {trade.ticker} settled {trade.settlement_result.upper()} | "
-                f"+${trade.net_profit_dollars:.2f}",
+                f"WIN: {tracked.ticker} | BTC ${btc_price:,.2f} >= ${tracked.floor_strike:,.2f} | "
+                f"+${tracked.net_profit_cents/100:.2f} (slippage: {slippage:+d}c)",
                 "WIN"
             )
             self.state.total_wins += 1
-            self.state.consecutive_losses = 0
-            self.state.total_profit += trade.net_profit_dollars
-            self.state.bankroll += trade.net_profit_dollars
-            self.martingale.record_win()
-
-        elif trade.status == TradeStatus.SETTLED_LOSS:
+        else:
             self.log(
-                f"LOSS: {trade.ticker} settled {trade.settlement_result.upper()} | "
-                f"${trade.net_profit_dollars:.2f}",
+                f"LOSS: {tracked.ticker} | BTC ${btc_price:,.2f} < ${tracked.floor_strike:,.2f} | "
+                f"${tracked.net_profit_cents/100:.2f} (slippage: {slippage:+d}c)",
                 "LOSS"
             )
             self.state.total_losses += 1
-            self.state.consecutive_losses += 1
-            self.state.total_profit += trade.net_profit_dollars
-            self.state.bankroll += trade.net_profit_dollars  # negative
-            self.martingale.record_loss(trade.cost_dollars)
 
-        else:
-            self.log(f"Settlement unclear for {trade.ticker}", "WARN")
-
+        self.state.total_profit += tracked.net_profit_cents / 100
         self.state.total_trades += 1
         self.state.last_trade_time = datetime.now(timezone.utc).isoformat()
 
-        # Always refresh bankroll from Kalshi after settlement for accuracy
-        self.refresh_bankroll()
+        # Sync martingale state from tracker (it's the source of truth)
+        self._sync_martingale_from_tracker()
+
+        # Print detailed trade summary
+        self.tracker.print_trade_summary(tracked)
+
         self.state.save(self.state_path)
 
     def run_once(self) -> bool:
@@ -235,12 +290,14 @@ class Trader:
             )
 
         # Execute
-        trade = self.execute_trade(opportunity, bet)
-        if not trade:
+        result = self.execute_trade(opportunity, bet)
+        if not result:
             return False
 
-        # Process settlement
-        self.process_settlement(trade)
+        trade, tracked = result
+
+        # Process settlement with Kraken-based instant determination
+        self.process_settlement(trade, tracked)
 
         return True
 
@@ -297,25 +354,47 @@ class Trader:
         # Save order book log
         self.scanner.save_order_book_log()
 
-        # Print trade log
+        # Print detailed trade history with exact payouts
+        self.tracker.print_all_trades()
+
+        # Also print executor log for reference
         self.executor.print_trade_log()
 
     def show_status(self):
         """Print current status."""
         self.refresh_bankroll()
+        self._sync_martingale_from_tracker()
 
         print("\n" + "=" * 50)
         print("CURRENT STATUS")
         print("=" * 50)
         print(f"Bankroll: ${self.state.bankroll:.2f}")
-        print(f"Consecutive losses: {self.state.consecutive_losses}")
-        print(f"In recovery mode: {self.martingale.state.in_recovery}")
+        print(f"Consecutive losses: {self.tracker.martingale.consecutive_losses}")
+        print(f"In recovery mode: {self.tracker.martingale.in_recovery}")
+        if self.tracker.martingale.in_recovery:
+            recovery_target = self.tracker.martingale.get_recovery_target_cents() / 100
+            print(f"Recovery target: ${recovery_target:.2f}")
         print(f"Session trades: {self.state.total_trades}")
         print(f"Session P&L: ${self.state.total_profit:+.2f}")
         print()
 
+        # Show next bet info
+        next_bet_info = self.tracker.get_next_bet_info()
+        print(f"Next bet: #{next_bet_info['bet_number']}")
+        if next_bet_info['in_recovery']:
+            print(f"  Recovering: ${next_bet_info['recovering_cents']/100:.2f}")
+        print()
+
         # Show martingale sequence
         self.martingale.print_sequence(self.state.bankroll, 85)
+
+    def show_recent_trades(self, count: int = 10):
+        """Print recent trades with exact payout details."""
+        self.tracker.print_all_trades()
+
+    def get_trade_history(self) -> list:
+        """Get all tracked trades for external display."""
+        return self.tracker.trades
 
     def paper_trade(self, num_trades: int = 10):
         """

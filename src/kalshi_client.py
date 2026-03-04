@@ -58,6 +58,7 @@ class MarketData:
     volume_24h: int
     status: str
     close_time: str
+    floor_strike: float = 0.0  # The BTC price to beat
 
     @property
     def yes_price(self) -> int:
@@ -82,6 +83,7 @@ class MarketData:
             volume_24h=int(float(market.get("volume_24h", "0"))),
             status=market.get("status", ""),
             close_time=market.get("close_time", ""),
+            floor_strike=float(market.get("floor_strike", 0) or 0),
         )
 
 
