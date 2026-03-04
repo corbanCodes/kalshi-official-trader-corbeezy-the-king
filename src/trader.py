@@ -103,12 +103,15 @@ class Trader:
         tracker_state = self.tracker.martingale
         self.martingale.state.in_recovery = tracker_state.in_recovery
         self.martingale.state.total_loss_dollars = tracker_state.total_loss_cents / 100
+        self.martingale.state.base_target_profit_dollars = tracker_state.base_target_profit_cents / 100
+        self.martingale.state.consecutive_losses = tracker_state.consecutive_losses
         # consecutive_losses is tracked in self.state, sync it too
         self.state.consecutive_losses = tracker_state.consecutive_losses
         if tracker_state.in_recovery:
             self.log(
                 f"Loaded recovery state: {tracker_state.consecutive_losses} losses, "
-                f"recovering ${tracker_state.total_loss_cents/100:.2f}",
+                f"recovering ${tracker_state.total_loss_cents/100:.2f} + "
+                f"${tracker_state.base_target_profit_cents/100:.2f} target",
                 "WARN"
             )
 

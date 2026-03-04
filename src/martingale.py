@@ -31,7 +31,8 @@ class MartingaleState:
     """Current state of martingale sequence."""
     consecutive_losses: int = 0
     total_loss_dollars: float = 0.0
-    base_bet_dollars: float = 0.0  # The original base bet we're recovering from
+    base_bet_dollars: float = 0.0  # The original base bet cost
+    base_target_profit_dollars: float = 0.0  # The original profit target (FIXED - must be stored!)
     in_recovery: bool = False
 
 
@@ -52,12 +53,19 @@ class MartingaleCalculator:
         """Reset after a win."""
         self.state = MartingaleState()
 
-    def record_loss(self, bet_cost: float, base_bet: float = None):
-        """Record a loss."""
+    def record_loss(self, bet_cost: float, target_profit: float = 0.0):
+        """
+        Record a loss.
+
+        Args:
+            bet_cost: Cost of the bet that just lost
+            target_profit: The profit we WOULD have made if we won (only needed for first loss)
+        """
         self.state.consecutive_losses += 1
         self.state.total_loss_dollars += bet_cost
         if not self.state.in_recovery:
-            self.state.base_bet_dollars = base_bet or bet_cost
+            self.state.base_bet_dollars = bet_cost
+            self.state.base_target_profit_dollars = target_profit  # Store the ORIGINAL target!
         self.state.in_recovery = True
 
     def record_win(self):
@@ -187,15 +195,17 @@ class MartingaleCalculator:
     ) -> MartingaleBet:
         """
         Calculate recovery bet to recoup ALL losses + original expected profit.
+
+        TRUE MARTINGALE: Recovery = cumulative losses + ORIGINAL profit target
+        The profit target is stored when first loss occurs, NOT recalculated!
         """
         net_profit_per_contract = MarketScanner.calc_net_profit(entry_price_cents)
         price_dollars = entry_price_cents / 100
 
-        # Need to recover: all losses + what we would have profited on base bet
-        base_profit = self.state.base_bet_dollars * self.get_return_multiplier(entry_price_cents)
-        needed_profit = self.state.total_loss_dollars + base_profit
+        # Need to recover: all cumulative losses + ORIGINAL profit target (stored, not recalculated!)
+        needed_profit = self.state.total_loss_dollars + self.state.base_target_profit_dollars
 
-        # Calculate contracts needed
+        # Calculate contracts needed at CURRENT price
         if net_profit_per_contract <= 0:
             contracts = 1
         else:
@@ -333,3 +343,57 @@ class MartingaleCalculator:
         can_survive = sequence[-1].total_risk_dollars <= bankroll
         print(f"Can survive 2 losses: {'YES' if can_survive else 'NO'}")
         print(f"Base bet is {sequence[0].cost_dollars / bankroll * 100:.1f}% of bankroll")
+
+    def print_survival_analysis(self, bankroll: float, min_price: int = 80, max_price: int = 90):
+        """Print survival analysis for ALL prices in the range."""
+        print(f"\n{'='*80}")
+        print(f"TRUE MARTINGALE SURVIVAL ANALYSIS - ${bankroll:.2f} bankroll")
+        print(f"{'='*80}")
+        print(f"{'Price':<8} {'Return%':<10} {'Base':<12} {'R1':<12} {'R2':<12} {'Total Risk':<14} {'Status':<10}")
+        print("-" * 80)
+
+        safe_contracts = self.find_max_safe_contracts(bankroll, min_price, max_price)
+        worst_case_price = None
+        max_total_risk = 0
+
+        for price in range(min_price, max_price + 1):
+            net_profit_per = MarketScanner.calc_net_profit(price)
+            return_pct = (net_profit_per / (price / 100)) * 100
+            price_dollars = price / 100
+
+            # Calculate sequence at this price with safe_contracts
+            base_cost = safe_contracts * price_dollars
+            base_profit = safe_contracts * net_profit_per
+
+            # Recovery 1
+            r1_needed = base_cost + base_profit
+            r1_contracts = math.ceil(r1_needed / net_profit_per) if net_profit_per > 0 else 1
+            r1_cost = r1_contracts * price_dollars
+
+            # Recovery 2
+            r2_needed = base_cost + r1_cost + base_profit
+            r2_contracts = math.ceil(r2_needed / net_profit_per) if net_profit_per > 0 else 1
+            r2_cost = r2_contracts * price_dollars
+
+            total_risk = base_cost + r1_cost + r2_cost
+            status = "OK" if total_risk <= bankroll else "BUST!"
+
+            if total_risk > max_total_risk:
+                max_total_risk = total_risk
+                worst_case_price = price
+
+            print(
+                f"{price}c      "
+                f"{return_pct:<10.1f} "
+                f"{safe_contracts}@${base_cost:<7.2f} "
+                f"{r1_contracts}@${r1_cost:<7.2f} "
+                f"{r2_contracts}@${r2_cost:<7.2f} "
+                f"${total_risk:<13.2f} "
+                f"{status}"
+            )
+
+        print("-" * 80)
+        print(f"SAFE BASE CONTRACTS: {safe_contracts}")
+        print(f"WORST CASE: {worst_case_price}c with ${max_total_risk:.2f} total risk")
+        print(f"BUFFER: ${bankroll - max_total_risk:.2f} remaining")
+        print(f"{'='*80}")

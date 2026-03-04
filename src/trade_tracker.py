@@ -231,8 +231,13 @@ class TradeTracker:
         if trade.won:
             self.martingale.record_win()
         else:
-            # Calculate what the base profit would have been
-            base_profit = trade.gross_payout_cents - trade.cost_cents - trade.fee_cents if trade.bet_number == 1 else 0
+            # Calculate what we WOULD have profited if we won (for TRUE martingale recovery)
+            # Gross payout if won = contracts * 100 cents
+            # Net profit if won = gross_payout - cost - fee
+            would_have_won_gross = trade.contracts * 100
+            would_have_profited = would_have_won_gross - trade.cost_cents - trade.fee_cents
+            base_profit = would_have_profited if trade.bet_number == 1 else 0
+
             self.martingale.record_loss(
                 loss_cents=trade.cost_cents + trade.fee_cents,
                 base_profit_cents=base_profit
