@@ -39,7 +39,17 @@ DASHBOARD_STATE = {
     "last_update": None,
     "recent_trades": [],
     "error": None,
+    "activity_log": [],
+    "current_market": None,
+    "market_prices": {},
 }
+
+def log_activity(msg):
+    """Add message to activity log."""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    DASHBOARD_STATE["activity_log"].append(f"{timestamp} {msg}")
+    DASHBOARD_STATE["activity_log"] = DASHBOARD_STATE["activity_log"][-20:]  # Keep last 20
+    print(f"{timestamp} {msg}")
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -139,9 +149,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         </div>
     </div>
 
-    <div class="trades">
-        <h3 style="margin-bottom: 15px; color: #888;">Recent Trades</h3>
-        TRADES_HTML
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
+        <div class="trades">
+            <h3 style="margin-bottom: 15px; color: #888;">Recent Trades</h3>
+            TRADES_HTML
+        </div>
+        <div class="trades">
+            <h3 style="margin-bottom: 15px; color: #888;">Activity Log</h3>
+            <div style="font-size: 0.85rem; max-height: 200px; overflow-y: auto;">ACTIVITY_LOG</div>
+        </div>
+    </div>
+
+    <div class="trades" style="margin-top: 20px;">
+        <h3 style="margin-bottom: 15px; color: #888;">Market Prices</h3>
+        <div style="font-size: 0.9rem;">MARKET_PRICES</div>
     </div>
 
     <p class="updated">Last updated: LAST_UPDATE</p>
@@ -201,6 +222,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         html = html.replace("CONSECUTIVE", str(state["consecutive_losses"]))
         html = html.replace("CONSEC_CLASS", consec_class)
         html = html.replace("TRADES_HTML", trades_html)
+
+        # Activity log
+        activity_html = "<br>".join(state.get("activity_log", [])[-10:]) or "No activity yet"
+        html = html.replace("ACTIVITY_LOG", activity_html)
+
+        # Market prices
+        market_html = ""
+        for ticker, prices in state.get("market_prices", {}).items():
+            market_html += f'<div style="padding:5px 0; border-bottom:1px solid #333;">'
+            market_html += f'<strong>{ticker}</strong>: '
+            market_html += f'YES {prices["yes_bid"]}/{prices["yes_ask"]}c | '
+            market_html += f'NO {prices["no_bid"]}/{prices["no_ask"]}c</div>'
+        html = html.replace("MARKET_PRICES", market_html or "No market data")
+
         html = html.replace("LAST_UPDATE", state.get("last_update", "never"))
 
         self.send_response(200)
@@ -265,10 +300,27 @@ def cmd_run():
 
             update_dashboard(trader)
 
+            # Always scan markets (even when stopped)
+            try:
+                markets = trader.client.get_markets(limit=10)
+                for m in markets.get("markets", [])[:5]:
+                    ticker = m.get("ticker", "")
+                    yes_bid = m.get("yes_bid", 0)
+                    yes_ask = m.get("yes_ask", 0)
+                    DASHBOARD_STATE["market_prices"][ticker] = {
+                        "yes_bid": yes_bid,
+                        "yes_ask": yes_ask,
+                        "no_bid": 100 - yes_ask if yes_ask else 0,
+                        "no_ask": 100 - yes_bid if yes_bid else 0,
+                    }
+                log_activity(f"Scanned {len(markets.get('markets', []))} markets")
+            except Exception as e:
+                log_activity(f"Scan error: {e}")
+
             # Check if trading is enabled
             if not DASHBOARD_STATE["trading_enabled"]:
                 DASHBOARD_STATE["status"] = "stopped"
-                time.sleep(2)
+                time.sleep(1)
                 continue
 
             # Check if can trade
@@ -285,6 +337,7 @@ def cmd_run():
             traded = trader.run_once()
 
             if traded:
+                log_activity(f"TRADE EXECUTED! P&L: ${trader.state.total_profit:+.2f}")
                 DASHBOARD_STATE["recent_trades"].append({
                     "time": datetime.now().strftime("%H:%M:%S"),
                     "profit": trader.state.total_profit,
@@ -292,6 +345,7 @@ def cmd_run():
                 update_dashboard(trader)
                 time.sleep(2)
             else:
+                log_activity("No opportunities in 80-90c range")
                 time.sleep(5)
 
     except Exception as e:
