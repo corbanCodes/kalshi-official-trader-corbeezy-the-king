@@ -30,15 +30,17 @@ class OrderResponse:
     @classmethod
     def from_api(cls, data: dict) -> "OrderResponse":
         order = data.get("order", data)
+        # Kalshi API uses "fill_count", not "filled_count"
+        fill_count = order.get("fill_count", order.get("filled_count", 0))
         return cls(
             order_id=order.get("order_id", ""),
             ticker=order.get("ticker", ""),
             side=order.get("side", ""),
             action=order.get("action", ""),
             price=order.get("yes_price", order.get("no_price", 0)),
-            count=order.get("count", 0),
+            count=order.get("count", order.get("initial_count", 0)),
             status=order.get("status", ""),
-            filled_count=order.get("filled_count", 0),
+            filled_count=fill_count,
             remaining_count=order.get("remaining_count", 0),
             average_fill_price=order.get("average_fill_price", 0),
         )

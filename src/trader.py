@@ -196,6 +196,9 @@ class Trader:
 
         self.state.total_trades += 1
         self.state.last_trade_time = datetime.now(timezone.utc).isoformat()
+
+        # Always refresh bankroll from Kalshi after settlement for accuracy
+        self.refresh_bankroll()
         self.state.save(self.state_path)
 
     def run_once(self) -> bool:

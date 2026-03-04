@@ -467,13 +467,17 @@ def cmd_run():
             DASHBOARD_STATE["status"] = "running"
             DASHBOARD_STATE["error"] = None
 
+            # Track profit before trade to calculate individual trade P&L
+            profit_before = trader.state.total_profit
             traded = trader.run_once()
 
             if traded:
-                log_activity(f"TRADE EXECUTED! P&L: ${trader.state.total_profit:+.2f}")
+                # Calculate this trade's profit (not cumulative)
+                trade_profit = trader.state.total_profit - profit_before
+                log_activity(f"TRADE EXECUTED! P&L: ${trade_profit:+.2f} (Total: ${trader.state.total_profit:+.2f})")
                 DASHBOARD_STATE["recent_trades"].append({
                     "time": datetime.now().strftime("%H:%M:%S"),
-                    "profit": trader.state.total_profit,
+                    "profit": trade_profit,
                 })
                 update_dashboard(trader)
                 time.sleep(2)
