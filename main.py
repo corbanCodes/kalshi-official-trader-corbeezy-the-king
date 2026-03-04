@@ -258,8 +258,8 @@ def cmd_run():
 
         # Main loop
         while True:
-            # Refresh balance every 30 seconds
-            if time.time() - last_balance_check > 30:
+            # Refresh balance every second
+            if time.time() - last_balance_check > 1:
                 trader.refresh_bankroll()
                 last_balance_check = time.time()
 
