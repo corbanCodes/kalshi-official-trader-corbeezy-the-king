@@ -254,8 +254,15 @@ def cmd_run():
         print(f"Bankroll: ${trader.state.bankroll:.2f}")
         print("Waiting for START command from dashboard...")
 
+        last_balance_check = 0
+
         # Main loop
         while True:
+            # Refresh balance every 30 seconds
+            if time.time() - last_balance_check > 30:
+                trader.refresh_bankroll()
+                last_balance_check = time.time()
+
             update_dashboard(trader)
 
             # Check if trading is enabled
