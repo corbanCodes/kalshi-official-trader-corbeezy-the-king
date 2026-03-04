@@ -109,7 +109,9 @@ class KalshiClient:
         url = f"{self.config.api_url}{path}"
         body = json.dumps(data) if data else ""
 
-        headers = self.auth.get_auth_headers(method, path, body)
+        # Signature must include full path with /trade-api/v2
+        full_path = f"/trade-api/v2{path}"
+        headers = self.auth.get_auth_headers(method, full_path, body)
 
         response = self.session.request(
             method=method,
