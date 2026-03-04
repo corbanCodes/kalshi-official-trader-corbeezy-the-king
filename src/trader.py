@@ -274,7 +274,17 @@ class Trader:
         opportunity = self.scanner.find_best_opportunity()
 
         if not opportunity:
-            self.log("No opportunities in 80-90c range")
+            # Show recovery state in logs so user can see it on cloud
+            if self.tracker.martingale.in_recovery:
+                recovery_target = self.tracker.martingale.get_recovery_target_cents() / 100
+                self.log(
+                    f"No opportunities in 80-90c range | RECOVERY MODE: "
+                    f"{self.tracker.martingale.consecutive_losses} losses, "
+                    f"need ${recovery_target:.2f} to recover",
+                    "WARN"
+                )
+            else:
+                self.log("No opportunities in 80-90c range")
             return False
 
         self.log(f"Found: {opportunity}")
@@ -288,7 +298,7 @@ class Trader:
         if bet.bet_number > 1:
             self.log(
                 f"RECOVERY BET #{bet.bet_number}: Recovering ${self.martingale.state.total_loss_dollars:.2f} + "
-                f"${self.martingale.target_profit:.2f} target",
+                f"${self.martingale.state.base_target_profit_dollars:.2f} target",
                 "WARN"
             )
 

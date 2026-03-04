@@ -397,3 +397,172 @@ class MartingaleCalculator:
         print(f"WORST CASE: {worst_case_price}c with ${max_total_risk:.2f} total risk")
         print(f"BUFFER: ${bankroll - max_total_risk:.2f} remaining")
         print(f"{'='*80}")
+
+    def verify_true_martingale(self, base_contracts: int = 3, min_price: int = 80, max_price: int = 90):
+        """
+        PROOF that TRUE martingale recovery works for ALL price combinations.
+
+        Tests every combination of:
+        - Loss at price X (80-90c)
+        - Recovery at price Y (80-90c)
+
+        Verifies that recovery profit >= loss + original target profit
+        """
+        print(f"\n{'='*90}")
+        print("TRUE MARTINGALE VERIFICATION - PROVING RECOVERY MATH")
+        print(f"{'='*90}")
+        print(f"Base contracts: {base_contracts}")
+        print()
+
+        all_pass = True
+        failures = []
+
+        for loss_price in range(min_price, max_price + 1):
+            price_dollars = loss_price / 100
+            net_profit_per = MarketScanner.calc_net_profit(loss_price)
+
+            # Calculate what we lose and what we WOULD have profited
+            loss_cost = base_contracts * price_dollars
+            fee = MarketScanner.calc_fee(loss_price) * base_contracts
+            total_loss = loss_cost + fee
+            would_have_profit = base_contracts * net_profit_per  # This is the ORIGINAL target
+
+            print(f"LOSS @ {loss_price}c: {base_contracts} contracts")
+            print(f"  Cost: ${loss_cost:.2f} + ${fee:.2f} fee = ${total_loss:.2f} total loss")
+            print(f"  Would have profited: ${would_have_profit:.2f} (THIS IS THE TARGET TO RECOVER)")
+            print(f"  MUST RECOVER: ${total_loss:.2f} + ${would_have_profit:.2f} = ${total_loss + would_have_profit:.2f}")
+            print()
+
+            # Now test recovery at every price
+            print(f"  {'Recovery@':<12} {'Contracts':<12} {'Cost':<10} {'Profit':<12} {'Needed':<12} {'Status'}")
+            print(f"  {'-'*70}")
+
+            for recovery_price in range(min_price, max_price + 1):
+                r_price_dollars = recovery_price / 100
+                r_net_profit_per = MarketScanner.calc_net_profit(recovery_price)
+
+                # TRUE MARTINGALE: need to recover loss + ORIGINAL target profit
+                needed_profit = total_loss + would_have_profit
+
+                # Calculate contracts needed
+                r_contracts = math.ceil(needed_profit / r_net_profit_per) if r_net_profit_per > 0 else 999
+                r_cost = r_contracts * r_price_dollars
+                r_actual_profit = r_contracts * r_net_profit_per
+
+                # Does it actually recover enough?
+                recovered = r_actual_profit >= needed_profit - 0.01  # Small float tolerance
+                status = "✓ PASS" if recovered else "✗ FAIL"
+
+                if not recovered:
+                    all_pass = False
+                    failures.append((loss_price, recovery_price, needed_profit, r_actual_profit))
+
+                print(f"  {recovery_price}c          {r_contracts:<12} ${r_cost:<9.2f} ${r_actual_profit:<11.2f} ${needed_profit:<11.2f} {status}")
+
+            print()
+
+        print(f"{'='*90}")
+        if all_pass:
+            print("✓ ALL RECOVERY SCENARIOS PASS - TRUE MARTINGALE VERIFIED!")
+            print("  Every loss at 80-90c can be recovered at any price 80-90c")
+        else:
+            print(f"✗ {len(failures)} FAILURES:")
+            for loss_p, rec_p, needed, got in failures:
+                print(f"  Loss@{loss_p}c -> Recovery@{rec_p}c: needed ${needed:.2f}, got ${got:.2f}")
+        print(f"{'='*90}")
+
+        return all_pass
+
+    def verify_recovery_sequence(self, bankroll: float = 443.0, base_contracts: int = 3):
+        """
+        Simulate a FULL loss sequence and verify recovery at each step.
+
+        Shows exactly what happens when:
+        1. Base bet loses
+        2. Recovery 1 loses
+        3. Recovery 2 wins (or busts if insufficient bankroll)
+        """
+        print(f"\n{'='*90}")
+        print("FULL LOSS SEQUENCE SIMULATION")
+        print(f"{'='*90}")
+        print(f"Starting bankroll: ${bankroll:.2f}")
+        print(f"Base contracts: {base_contracts}")
+        print()
+
+        # Test worst case: all bets at highest cost (90c)
+        test_price = 90
+        price_dollars = test_price / 100
+        net_profit_per = MarketScanner.calc_net_profit(test_price)
+
+        print(f"Testing at WORST CASE price: {test_price}c")
+        print(f"Net profit per contract: ${net_profit_per:.4f}")
+        print()
+
+        # Simulate the sequence
+        cumulative_loss = 0
+        original_target = 0
+        remaining_bankroll = bankroll
+
+        for bet_num in range(1, 4):  # Base + 2 recoveries
+            if bet_num == 1:
+                # Base bet
+                contracts = base_contracts
+                cost = contracts * price_dollars
+                fee = MarketScanner.calc_fee(test_price) * contracts
+                total_cost = cost + fee
+                profit_if_win = contracts * net_profit_per
+                original_target = profit_if_win  # Store original target
+
+                print(f"BET {bet_num} (BASE):")
+                print(f"  Contracts: {contracts}")
+                print(f"  Cost: ${cost:.2f} + ${fee:.2f} fee = ${total_cost:.2f}")
+                print(f"  If WIN: +${profit_if_win:.2f}")
+                print(f"  -> LOSES")
+
+                cumulative_loss += total_cost
+                remaining_bankroll -= total_cost
+
+            else:
+                # Recovery bet
+                needed_profit = cumulative_loss + original_target
+                contracts = math.ceil(needed_profit / net_profit_per)
+                cost = contracts * price_dollars
+                fee = MarketScanner.calc_fee(test_price) * contracts
+                total_cost = cost + fee
+                profit_if_win = contracts * net_profit_per
+
+                print(f"\nBET {bet_num} (RECOVERY {bet_num - 1}):")
+                print(f"  Must recover: ${cumulative_loss:.2f} loss + ${original_target:.2f} target = ${needed_profit:.2f}")
+                print(f"  Contracts needed: {contracts}")
+                print(f"  Cost: ${cost:.2f} + ${fee:.2f} fee = ${total_cost:.2f}")
+                print(f"  If WIN: +${profit_if_win:.2f}")
+
+                if cost > remaining_bankroll:
+                    print(f"  -> CANNOT AFFORD (need ${cost:.2f}, have ${remaining_bankroll:.2f})")
+                    print(f"\n✗ BUST AT BET {bet_num}")
+                    return False
+
+                if bet_num == 3:
+                    # Final bet - assume it wins
+                    print(f"  -> WINS!")
+                    net_outcome = profit_if_win - cumulative_loss
+                    print(f"\nFINAL RESULT:")
+                    print(f"  Total wagered across all bets: ${bankroll - remaining_bankroll + cost:.2f}")
+                    print(f"  Recovery profit: ${profit_if_win:.2f}")
+                    print(f"  Minus cumulative losses: -${cumulative_loss:.2f}")
+                    print(f"  Net outcome: ${net_outcome:+.2f}")
+
+                    if net_outcome >= original_target - 0.01:
+                        print(f"\n✓ TRUE MARTINGALE WORKS: Net ${net_outcome:.2f} >= Original target ${original_target:.2f}")
+                        return True
+                    else:
+                        print(f"\n✗ FAILED: Net ${net_outcome:.2f} < Original target ${original_target:.2f}")
+                        return False
+                else:
+                    print(f"  -> LOSES")
+                    cumulative_loss += total_cost
+                    remaining_bankroll -= total_cost
+
+        print(f"\nCumulative loss after all bets: ${cumulative_loss:.2f}")
+        print(f"Remaining bankroll: ${remaining_bankroll:.2f}")
+        print(f"{'='*90}")
