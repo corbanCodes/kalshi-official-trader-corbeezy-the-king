@@ -66,7 +66,6 @@ class Trader:
             data_dir=self.config.data_dir,
         )
         self.martingale = MartingaleCalculator(
-            target_profit=self.config.target_profit_per_trade,
             max_consecutive_losses=self.config.trading.max_consecutive_losses,
         )
         self.executor = TradeExecutor(

@@ -58,6 +58,9 @@ class MarketScanner:
     3. If neither at 80-90, watch for whichever hits 80 first
     """
 
+    # 15-minute BTC market series only
+    CRYPTO_15M_SERIES = ["KXBTC15M"]
+
     def __init__(
         self,
         client: KalshiClient,
@@ -122,7 +125,7 @@ class MarketScanner:
         Returns:
             TradingOpportunity if valid entry found, None otherwise
         """
-        if market.status != "open":
+        if market.status not in ("open", "active"):
             return None
 
         close_time = self.parse_close_time(market.close_time)
@@ -182,27 +185,56 @@ class MarketScanner:
 
     def scan_all_markets(self) -> list[TradingOpportunity]:
         """
-        Scan all open markets for opportunities.
+        Scan 15-minute crypto markets for opportunities.
 
         Returns:
             List of valid trading opportunities
         """
         opportunities = []
 
-        try:
-            response = self.client.get_markets(status="open", limit=500)
-            markets = response.get("markets", [])
+        # Scan each 15-minute crypto series (BTC, ETH, SOL)
+        for series in self.CRYPTO_15M_SERIES:
+            try:
+                response = self.client.get_markets(
+                    status="open",
+                    series_ticker=series,
+                    limit=50
+                )
+                markets = response.get("markets", [])
 
-            for market_data in markets:
-                market = MarketData.from_api(market_data)
-                opp = self.scan_market(market)
-                if opp:
-                    opportunities.append(opp)
+                for market_data in markets:
+                    market = MarketData.from_api(market_data)
+                    opp = self.scan_market(market)
+                    if opp:
+                        opportunities.append(opp)
 
-        except Exception as e:
-            print(f"Error scanning markets: {e}")
+            except Exception as e:
+                print(f"Error scanning {series}: {e}")
 
         return opportunities
+
+    def get_all_crypto_markets(self) -> list[MarketData]:
+        """
+        Get all 15-minute crypto markets (for dashboard display).
+
+        Returns:
+            List of MarketData for all 15M crypto markets
+        """
+        all_markets = []
+
+        for series in self.CRYPTO_15M_SERIES:
+            try:
+                response = self.client.get_markets(
+                    status="open",
+                    series_ticker=series,
+                    limit=200  # Get all available windows
+                )
+                for market_data in response.get("markets", []):
+                    all_markets.append(MarketData.from_api(market_data))
+            except Exception as e:
+                print(f"Error fetching {series}: {e}")
+
+        return all_markets
 
     def find_best_opportunity(self) -> Optional[TradingOpportunity]:
         """

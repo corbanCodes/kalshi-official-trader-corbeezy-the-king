@@ -98,53 +98,62 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body { font-family: monospace; background: #0a0a0a; color: #e0e0e0; padding: 40px; }
         h1 { color: #6bcb77; margin-bottom: 20px; }
         .controls { margin-bottom: 20px; display: flex; gap: 10px; align-items: center; }
-        .btn { padding: 12px 30px; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; font-family: monospace; font-weight: bold; }
+        .btn { padding: 12px 30px; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; font-family: monospace; font-weight: bold; transition: all 0.2s; }
         .btn-start { background: #6bcb77; color: #000; }
         .btn-start:hover { background: #5ab868; }
         .btn-stop { background: #ff6b6b; color: #fff; }
         .btn-stop:hover { background: #e55555; }
         .btn:disabled { opacity: 0.5; cursor: not-allowed; }
         .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin: 20px 0; }
-        .card { background: #1a1a1a; border: 1px solid #333; border-radius: 10px; padding: 20px; text-align: center; }
-        .card .value { font-size: 2rem; font-weight: bold; color: #6bcb77; }
+        .card { background: #1a1a1a; border: 1px solid #333; border-radius: 10px; padding: 20px; text-align: center; transition: all 0.3s; }
+        .card .value { font-size: 2rem; font-weight: bold; color: #6bcb77; transition: all 0.3s; }
         .card .label { color: #888; margin-top: 5px; }
         .card.warn .value { color: #ffd93d; }
         .card.danger .value { color: #ff6b6b; }
-        .status { padding: 10px 20px; border-radius: 20px; display: inline-block; }
+        .status { padding: 10px 20px; border-radius: 20px; display: inline-block; transition: all 0.3s; }
         .status.running { background: rgba(107,203,119,0.2); color: #6bcb77; }
         .status.stopped { background: rgba(136,136,136,0.2); color: #888; }
+        .status.paused { background: rgba(255,217,61,0.2); color: #ffd93d; }
         .status.error { background: rgba(255,107,107,0.2); color: #ff6b6b; }
         .trades { background: #1a1a1a; border-radius: 10px; padding: 20px; margin-top: 20px; }
         .trade { padding: 10px; border-bottom: 1px solid #333; display: flex; justify-content: space-between; }
         .trade.win { border-left: 3px solid #6bcb77; }
         .trade.loss { border-left: 3px solid #ff6b6b; }
         .updated { color: #666; margin-top: 20px; font-size: 0.8rem; }
+        .pulse { animation: pulse 0.5s ease-in-out; }
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
+        .market-row { padding: 8px 0; border-bottom: 1px solid #333; display: grid; grid-template-columns: 2fr 0.5fr 1fr 1fr; gap: 10px; align-items: center; }
+        .market-row .ticker { color: #6bcb77; font-weight: bold; }
+        .market-row .yes { color: #4ecdc4; }
+        .market-row .no { color: #ff6b6b; }
+        .live-indicator { display: inline-block; width: 8px; height: 8px; background: #6bcb77; border-radius: 50%; margin-right: 8px; animation: blink 1s infinite; }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
     </style>
 </head>
 <body>
-    <h1>15-MINUTE STRATEGY BOT</h1>
+    <h1><span class="live-indicator"></span>15-MINUTE STRATEGY BOT</h1>
 
     <div class="controls">
         <button class="btn btn-start" id="startBtn" onclick="startTrading()">START TRADING</button>
         <button class="btn btn-stop" id="stopBtn" onclick="stopTrading()" disabled>STOP</button>
-        <span class="status STATUS_CLASS" id="statusBadge">STATUS_TEXT</span>
+        <span class="status stopped" id="statusBadge">STOPPED</span>
     </div>
 
     <div class="grid">
-        <div class="card">
-            <div class="value">$BANKROLL</div>
+        <div class="card" id="bankrollCard">
+            <div class="value" id="bankroll">$0.00</div>
             <div class="label">Bankroll</div>
         </div>
-        <div class="card">
-            <div class="value">$TODAY_PROFIT</div>
+        <div class="card" id="profitCard">
+            <div class="value" id="profit">$+0.00</div>
             <div class="label">Today P&L</div>
         </div>
         <div class="card">
-            <div class="value">WINS/LOSSES</div>
-            <div class="label">W/L (WIN_RATE%)</div>
+            <div class="value" id="winloss">0/0</div>
+            <div class="label">W/L (<span id="winrate">0.0</span>%)</div>
         </div>
-        <div class="card CONSEC_CLASS">
-            <div class="value">CONSECUTIVE</div>
+        <div class="card" id="consecCard">
+            <div class="value" id="consec">0</div>
             <div class="label">Consecutive Losses</div>
         </div>
     </div>
@@ -152,92 +161,165 @@ class DashboardHandler(BaseHTTPRequestHandler):
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
         <div class="trades">
             <h3 style="margin-bottom: 15px; color: #888;">Recent Trades</h3>
-            TRADES_HTML
+            <div id="tradesContainer"><div class="trade">No trades yet</div></div>
         </div>
         <div class="trades">
             <h3 style="margin-bottom: 15px; color: #888;">Activity Log</h3>
-            <div style="font-size: 0.85rem; max-height: 200px; overflow-y: auto;">ACTIVITY_LOG</div>
+            <div id="activityLog" style="font-size: 0.85rem; max-height: 200px; overflow-y: auto;">Loading...</div>
         </div>
     </div>
 
     <div class="trades" style="margin-top: 20px;">
-        <h3 style="margin-bottom: 15px; color: #888;">Market Prices</h3>
-        <div style="font-size: 0.9rem;">MARKET_PRICES</div>
+        <h3 style="margin-bottom: 15px; color: #888;">Market Prices (Live)</h3>
+        <div id="marketPrices" style="font-size: 0.9rem;">Loading markets...</div>
     </div>
 
-    <p class="updated">Last updated: LAST_UPDATE</p>
+    <p class="updated">Last updated: <span id="lastUpdate">never</span> | Updates every 500ms</p>
 
     <script>
+        let lastBankroll = 0;
+        let lastProfit = 0;
+
         function startTrading() {
+            document.getElementById('startBtn').disabled = true;
             fetch('/api/start', {method: 'POST'})
                 .then(r => r.json())
-                .then(d => { if(d.success) location.reload(); });
+                .then(d => {
+                    if(d.success) {
+                        document.getElementById('startBtn').disabled = true;
+                        document.getElementById('stopBtn').disabled = false;
+                        updateStatus();
+                    }
+                });
         }
+
         function stopTrading() {
+            document.getElementById('stopBtn').disabled = true;
             fetch('/api/stop', {method: 'POST'})
                 .then(r => r.json())
-                .then(d => { if(d.success) location.reload(); });
+                .then(d => {
+                    if(d.success) {
+                        document.getElementById('startBtn').disabled = false;
+                        document.getElementById('stopBtn').disabled = true;
+                        updateStatus();
+                    }
+                });
         }
-        // Auto-refresh every 2 seconds
-        setTimeout(() => location.reload(), 2000);
+
+        function updateStatus() {
+            fetch('/api/status')
+                .then(r => r.json())
+                .then(data => {
+                    // Update bankroll with pulse animation if changed
+                    const bankroll = data.bankroll || 0;
+                    const bankrollEl = document.getElementById('bankroll');
+                    if (bankroll !== lastBankroll) {
+                        bankrollEl.classList.add('pulse');
+                        setTimeout(() => bankrollEl.classList.remove('pulse'), 500);
+                        lastBankroll = bankroll;
+                    }
+                    bankrollEl.textContent = '$' + bankroll.toFixed(2);
+
+                    // Update profit
+                    const profit = data.today_profit || 0;
+                    const profitEl = document.getElementById('profit');
+                    profitEl.textContent = '$' + (profit >= 0 ? '+' : '') + profit.toFixed(2);
+                    profitEl.style.color = profit >= 0 ? '#6bcb77' : '#ff6b6b';
+                    if (profit !== lastProfit) {
+                        profitEl.classList.add('pulse');
+                        setTimeout(() => profitEl.classList.remove('pulse'), 500);
+                        lastProfit = profit;
+                    }
+
+                    // Win/Loss
+                    const wins = data.wins || 0;
+                    const losses = data.losses || 0;
+                    document.getElementById('winloss').textContent = wins + '/' + losses;
+                    const winrate = (wins + losses) > 0 ? (wins / (wins + losses) * 100) : 0;
+                    document.getElementById('winrate').textContent = winrate.toFixed(1);
+
+                    // Consecutive losses
+                    const consec = data.consecutive_losses || 0;
+                    document.getElementById('consec').textContent = consec;
+                    const consecCard = document.getElementById('consecCard');
+                    consecCard.className = 'card' + (consec >= 2 ? ' danger' : (consec === 1 ? ' warn' : ''));
+
+                    // Status badge
+                    const status = data.status || 'stopped';
+                    const statusBadge = document.getElementById('statusBadge');
+                    statusBadge.className = 'status ' + status;
+                    let statusText = status.toUpperCase();
+                    if (data.error) statusText += ': ' + data.error;
+                    statusBadge.textContent = statusText;
+
+                    // Buttons
+                    document.getElementById('startBtn').disabled = data.trading_enabled;
+                    document.getElementById('stopBtn').disabled = !data.trading_enabled;
+
+                    // Activity log
+                    const logs = data.activity_log || [];
+                    document.getElementById('activityLog').innerHTML = logs.slice(-10).join('<br>') || 'No activity yet';
+
+                    // Recent trades
+                    const trades = data.recent_trades || [];
+                    let tradesHtml = '';
+                    trades.slice(-10).forEach(t => {
+                        const cls = (t.profit || 0) > 0 ? 'win' : 'loss';
+                        tradesHtml += '<div class="trade ' + cls + '"><span>' + (t.time || '') + '</span><span>$' + (t.profit >= 0 ? '+' : '') + (t.profit || 0).toFixed(2) + '</span></div>';
+                    });
+                    document.getElementById('tradesContainer').innerHTML = tradesHtml || '<div class="trade">No trades yet</div>';
+
+                    // Market prices - 15 minute crypto markets
+                    const markets = data.market_prices || {};
+                    let marketHtml = '';
+                    const entries = Object.entries(markets);
+
+                    // Sort by time remaining
+                    entries.sort((a, b) => {
+                        const minsA = parseFloat(a[1].mins_remaining) || 999;
+                        const minsB = parseFloat(b[1].mins_remaining) || 999;
+                        return minsA - minsB;
+                    });
+
+                    for (const [ticker, prices] of entries) {
+                        const yesBid = prices.yes_bid || 0;
+                        const yesAsk = prices.yes_ask || 0;
+                        const noBid = prices.no_bid || 0;
+                        const noAsk = prices.no_ask || 0;
+                        const mins = prices.mins_remaining || 'N/A';
+
+                        // Highlight if in trading range (80-90c)
+                        const yesInRange = yesAsk >= 80 && yesAsk <= 90;
+                        const noInRange = noAsk >= 80 && noAsk <= 90;
+                        const highlight = yesInRange || noInRange ? ' style=\"background:#1a2a1a;\"' : '';
+
+                        marketHtml += '<div class=\"market-row\"' + highlight + '>';
+                        marketHtml += '<span class=\"ticker\">' + ticker + '</span>';
+                        marketHtml += '<span style=\"color:#ffd93d;\">' + mins + '</span>';
+                        marketHtml += '<span class=\"yes\">YES ' + yesBid + '/' + yesAsk + 'c' + (yesInRange ? ' *' : '') + '</span>';
+                        marketHtml += '<span class=\"no\">NO ' + noBid + '/' + noAsk + 'c' + (noInRange ? ' *' : '') + '</span>';
+                        marketHtml += '</div>';
+                    }
+                    document.getElementById('marketPrices').innerHTML = marketHtml || 'No 15-min crypto markets found';
+
+                    // Last update
+                    document.getElementById('lastUpdate').textContent = data.last_update || 'never';
+                })
+                .catch(err => {
+                    console.error('Update failed:', err);
+                });
+        }
+
+        // Update every 500ms via AJAX (no page reload)
+        setInterval(updateStatus, 500);
+
+        // Initial load
+        updateStatus();
     </script>
 </body>
 </html>"""
 
-        state = DASHBOARD_STATE
-        win_rate = (state["wins"] / (state["wins"] + state["losses"]) * 100) if (state["wins"] + state["losses"]) > 0 else 0
-
-        trades_html = ""
-        for t in state.get("recent_trades", [])[-10:]:
-            cls = "win" if t.get("profit", 0) > 0 else "loss"
-            trades_html += f'<div class="trade {cls}"><span>{t.get("time", "")}</span><span>${t.get("profit", 0):+.2f}</span></div>'
-
-        if not trades_html:
-            trades_html = '<div class="trade">No trades yet</div>'
-
-        if state["status"] == "running":
-            status_class = "running"
-        elif state.get("error"):
-            status_class = "error"
-        else:
-            status_class = "stopped"
-
-        status_text = state["status"].upper()
-        if state.get("error"):
-            status_text += f": {state['error']}"
-
-        # Button states based on trading status
-        if state["trading_enabled"]:
-            html = html.replace('id="startBtn"', 'id="startBtn" disabled')
-            html = html.replace('id="stopBtn" disabled', 'id="stopBtn"')
-
-        consec_class = "danger" if state["consecutive_losses"] >= 2 else ("warn" if state["consecutive_losses"] == 1 else "")
-
-        html = html.replace("STATUS_CLASS", status_class)
-        html = html.replace("STATUS_TEXT", status_text)
-        html = html.replace("BANKROLL", f"{state['bankroll']:.2f}")
-        html = html.replace("TODAY_PROFIT", f"{state['today_profit']:+.2f}")
-        html = html.replace("WINS/LOSSES", f"{state['wins']}/{state['losses']}")
-        html = html.replace("WIN_RATE", f"{win_rate:.1f}")
-        html = html.replace("CONSECUTIVE", str(state["consecutive_losses"]))
-        html = html.replace("CONSEC_CLASS", consec_class)
-        html = html.replace("TRADES_HTML", trades_html)
-
-        # Activity log
-        activity_html = "<br>".join(state.get("activity_log", [])[-10:]) or "No activity yet"
-        html = html.replace("ACTIVITY_LOG", activity_html)
-
-        # Market prices
-        market_html = ""
-        for ticker, prices in state.get("market_prices", {}).items():
-            market_html += f'<div style="padding:5px 0; border-bottom:1px solid #333;">'
-            market_html += f'<strong>{ticker}</strong>: '
-            market_html += f'YES {prices["yes_bid"]}/{prices["yes_ask"]}c | '
-            market_html += f'NO {prices["no_bid"]}/{prices["no_ask"]}c</div>'
-        html = html.replace("MARKET_PRICES", market_html or "No market data")
-
-        html = html.replace("LAST_UPDATE", state.get("last_update", "never"))
-
+        # HTML is now fully dynamic via AJAX - no server-side templating needed
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.end_headers()
@@ -300,27 +382,38 @@ def cmd_run():
 
             update_dashboard(trader)
 
-            # Always scan markets (even when stopped)
+            # Always scan 15-minute crypto markets (even when stopped)
             try:
-                markets = trader.client.get_markets(limit=10)
-                for m in markets.get("markets", [])[:5]:
-                    ticker = m.get("ticker", "")
-                    yes_bid = m.get("yes_bid", 0)
-                    yes_ask = m.get("yes_ask", 0)
-                    DASHBOARD_STATE["market_prices"][ticker] = {
-                        "yes_bid": yes_bid,
-                        "yes_ask": yes_ask,
-                        "no_bid": 100 - yes_ask if yes_ask else 0,
-                        "no_ask": 100 - yes_bid if yes_bid else 0,
+                crypto_markets = trader.scanner.get_all_crypto_markets()
+                DASHBOARD_STATE["market_prices"] = {}  # Clear old data
+
+                from datetime import timezone
+                now = datetime.now(timezone.utc)
+
+                for m in crypto_markets:
+                    # Calculate minutes remaining
+                    try:
+                        close_time = trader.scanner.parse_close_time(m.close_time)
+                        mins_remaining = (close_time - now).total_seconds() / 60
+                        mins_str = f"{mins_remaining:.1f}m"
+                    except:
+                        mins_str = "N/A"
+
+                    DASHBOARD_STATE["market_prices"][m.ticker] = {
+                        "yes_bid": m.yes_bid,
+                        "yes_ask": m.yes_ask,
+                        "no_bid": m.no_bid,
+                        "no_ask": m.no_ask,
+                        "mins_remaining": mins_str,
                     }
-                log_activity(f"Scanned {len(markets.get('markets', []))} markets")
+                log_activity(f"Scanned {len(crypto_markets)} 15-min crypto markets")
             except Exception as e:
                 log_activity(f"Scan error: {e}")
 
             # Check if trading is enabled
             if not DASHBOARD_STATE["trading_enabled"]:
                 DASHBOARD_STATE["status"] = "stopped"
-                time.sleep(1)
+                time.sleep(0.5)  # 500ms polling for faster updates
                 continue
 
             # Check if can trade
@@ -346,7 +439,7 @@ def cmd_run():
                 time.sleep(2)
             else:
                 log_activity("No opportunities in 80-90c range")
-                time.sleep(5)
+                time.sleep(1)  # Fast 1-second polling to catch quick opportunities
 
     except Exception as e:
         DASHBOARD_STATE["status"] = "error"

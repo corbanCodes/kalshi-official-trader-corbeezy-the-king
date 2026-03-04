@@ -153,6 +153,7 @@ class KalshiClient:
         cursor: str = None,
         tickers: list[str] = None,
         event_ticker: str = None,
+        series_ticker: str = None,
     ) -> dict:
         """Get list of markets."""
         params = {"status": status, "limit": limit}
@@ -162,6 +163,8 @@ class KalshiClient:
             params["tickers"] = ",".join(tickers)
         if event_ticker:
             params["event_ticker"] = event_ticker
+        if series_ticker:
+            params["series_ticker"] = series_ticker
         return self._request("GET", "/markets", params=params)
 
     def get_market(self, ticker: str) -> MarketData:
