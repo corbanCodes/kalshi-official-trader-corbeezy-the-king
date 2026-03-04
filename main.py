@@ -157,8 +157,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 .then(r => r.json())
                 .then(d => { if(d.success) location.reload(); });
         }
-        // Auto-refresh every 5 seconds
-        setTimeout(() => location.reload(), 5000);
+        // Auto-refresh every 2 seconds
+        setTimeout(() => location.reload(), 2000);
     </script>
 </body>
 </html>"""
