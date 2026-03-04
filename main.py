@@ -10,9 +10,13 @@ import os
 import json
 import threading
 import time
+import base64
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from urllib.parse import parse_qs
+
+# Dashboard authentication
+DASHBOARD_PASS = os.environ.get("DASHBOARD_PASS", "")
 
 # Add src to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -58,17 +62,53 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # Suppress logging
 
+    def check_auth(self):
+        """Check if request is authenticated. Returns True if OK, False if denied."""
+        if not DASHBOARD_PASS:
+            return True  # No password set, allow access
+
+        auth_header = self.headers.get("Authorization", "")
+        if not auth_header.startswith("Basic "):
+            return False
+
+        try:
+            encoded = auth_header[6:]
+            decoded = base64.b64decode(encoded).decode("utf-8")
+            username, password = decoded.split(":", 1)
+            return password == DASHBOARD_PASS
+        except:
+            return False
+
+    def send_auth_required(self):
+        """Send 401 auth required response."""
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="Dashboard"')
+        self.send_header("Content-Type", "text/html")
+        self.end_headers()
+        self.wfile.write(b"<h1>Authentication Required</h1>")
+
     def do_GET(self):
+        # Health check doesn't need auth
+        if self.path == "/health":
+            self.send_json({"status": "ok"})
+            return
+
+        # Check auth for everything else
+        if not self.check_auth():
+            self.send_auth_required()
+            return
+
         if self.path == "/" or self.path == "/dashboard":
             self.send_dashboard()
         elif self.path == "/api/status":
             self.send_json(DASHBOARD_STATE)
-        elif self.path == "/health":
-            self.send_json({"status": "ok"})
         else:
             self.send_error(404)
 
     def do_POST(self):
+        if not self.check_auth():
+            self.send_auth_required()
+            return
         if self.path == "/api/start":
             DASHBOARD_STATE["trading_enabled"] = True
             DASHBOARD_STATE["status"] = "running"
