@@ -38,12 +38,20 @@ class MartingaleState:
 
 class MartingaleCalculator:
     """
-    True Martingale Calculator.
+    Altered Martingale Calculator.
 
     Given a bankroll and entry price, calculates:
-    1. Max safe base bet that survives 2 consecutive losses
-    2. Recovery bets that recoup all losses + original profit
+    1. Max safe base bet that survives 3 consecutive losses (4 bets total)
+    2. Recovery bets that recoup LOSSES ONLY (not profit) - saves money
+
+    The bet: It will NEVER lose 3 times in a row.
+    - Bet 1: Base strategy bet
+    - Bet 2: Recovery Stage 1 (if bet 1 loses)
+    - Bet 3: Recovery Stage 2 (if bet 2 loses) - THE REAL BET
     """
+
+    # Recovery entries capped at 85c (more conservative than 80-92c base range)
+    RECOVERY_PRICE_CAP = 85
 
     def __init__(self, max_consecutive_losses: int = 2):
         self.max_consecutive_losses = max_consecutive_losses
@@ -129,37 +137,64 @@ class MartingaleCalculator:
 
         return worst_case_base
 
-    def find_max_safe_contracts(self, bankroll: float, min_price: int = 80, max_price: int = 90) -> int:
+    def find_max_safe_contracts(self, bankroll: float, min_price: int = 80, max_price: int = 92) -> int:
         """
-        Find the maximum base contract count that survives 2 losses at ANY price in range.
+        Find the maximum base contract count that survives 2 consecutive losses (3 bets total).
+
+        Uses loss-only recovery formula: contracts = loss / (1 - price)
+
+        At 85c with 1 base contract:
+        - Bet 1: 1 contract at 85c = $0.85 cost
+        - Recovery 1: $0.85 / 0.15 = 6 contracts at 85c = $5.10 cost
+        - Recovery 2: ($0.85 + $5.10) / 0.15 = 40 contracts at 85c = $34.00 cost
+        - Total risk: $0.85 + $5.10 + $34.00 = $39.95
+
+        Multiplier is approximately 47x base bet.
         """
-        for contracts in range(100, 0, -1):
-            all_safe = True
-            for price in range(min_price, max_price + 1):
-                total_risk = self._calc_total_risk_for_contracts(contracts, price)
-                if total_risk > bankroll:
-                    all_safe = False
-                    break
-            if all_safe:
+        # Use recovery price cap (85c) for worst-case calculations
+        recovery_price = self.RECOVERY_PRICE_CAP
+        price_dollars = recovery_price / 100
+
+        # Calculate the total multiplier for 4 bets at 85c using loss-only formula
+        # Bet 1: 1 contract = price cost
+        # Recovery 1: (bet1_cost) / (1 - price) contracts = R1 contracts
+        # Recovery 2: (bet1_cost + R1_cost) / (1 - price) contracts = R2 contracts
+        # Recovery 3: (bet1_cost + R1_cost + R2_cost) / (1 - price) contracts = R3 contracts
+
+        # Work backwards from bankroll to find max safe base contracts
+        for contracts in range(200, 0, -1):
+            total_risk = self._calc_total_risk_for_contracts(contracts, recovery_price)
+            if total_risk <= bankroll:
                 return contracts
+
         return 1
 
     def _calc_total_risk_for_contracts(self, base_contracts: int, price_cents: int) -> float:
-        """Calculate total risk for a given base contract count at a specific price."""
+        """
+        Calculate total risk for a given base contract count using loss-only recovery.
+
+        Uses the formula: contracts_needed = total_loss / (1 - price)
+        This recovers ONLY the losses (not profit), which is more cost-efficient.
+
+        3 bets total: Base + Recovery 1 + Recovery 2
+        """
         price_dollars = price_cents / 100
-        net_profit_per = MarketScanner.calc_net_profit(price_cents)
+        profit_per_dollar = 1 - price_dollars  # At 85c, profit is 15c per $1 wagered
 
+        if profit_per_dollar <= 0:
+            return float('inf')  # Can't recover at 99-100c
+
+        # Base bet (Bet 1)
         base_cost = base_contracts * price_dollars
-        base_profit = base_contracts * net_profit_per
+        cumulative_loss = base_cost
 
-        # Recovery 1
-        r1_needed = base_cost + base_profit
-        r1_contracts = math.ceil(r1_needed / net_profit_per) if net_profit_per > 0 else 1
+        # Recovery 1 (Bet 2): Recover base_cost
+        r1_contracts = math.ceil(cumulative_loss / profit_per_dollar)
         r1_cost = r1_contracts * price_dollars
+        cumulative_loss += r1_cost
 
-        # Recovery 2
-        r2_needed = base_cost + r1_cost + base_profit
-        r2_contracts = math.ceil(r2_needed / net_profit_per) if net_profit_per > 0 else 1
+        # Recovery 2 (Bet 3): Recover base_cost + r1_cost
+        r2_contracts = math.ceil(cumulative_loss / profit_per_dollar)
         r2_cost = r2_contracts * price_dollars
 
         return base_cost + r1_cost + r2_cost
@@ -194,25 +229,30 @@ class MartingaleCalculator:
         entry_price_cents: int,
     ) -> MartingaleBet:
         """
-        Calculate recovery bet to recoup ALL losses + original expected profit.
+        Calculate recovery bet to recoup LOSSES ONLY (not profit).
 
-        TRUE MARTINGALE: Recovery = cumulative losses + ORIGINAL profit target
-        The profit target is stored when first loss occurs, NOT recalculated!
+        ALTERED MARTINGALE: Recovery = cumulative losses only
+        Formula: contracts_needed = total_loss / (1 - price)
+
+        This saves money compared to recovering losses + profit.
         """
-        net_profit_per_contract = MarketScanner.calc_net_profit(entry_price_cents)
+        # Enforce recovery price cap (85c max)
+        if entry_price_cents > self.RECOVERY_PRICE_CAP:
+            return None  # Don't take recovery bets above 85c
+
         price_dollars = entry_price_cents / 100
 
-        # Need to recover: all cumulative losses + ORIGINAL profit target (stored, not recalculated!)
-        needed_profit = self.state.total_loss_dollars + self.state.base_target_profit_dollars
-
-        # Calculate contracts needed at CURRENT price
-        if net_profit_per_contract <= 0:
-            contracts = 1
-        else:
-            contracts = math.ceil(needed_profit / net_profit_per_contract)
+        # LOSS-ONLY RECOVERY: Just need to recover what we lost
+        # Formula: contracts = loss / (1 - price)
+        # At 85c: $1 loss needs $1 / 0.15 = 6.67 contracts
+        contracts = math.ceil(self.state.total_loss_dollars / (1 - price_dollars))
+        contracts = max(1, contracts)  # At least 1 contract
 
         cost = contracts * price_dollars
         total_risk = self.state.total_loss_dollars + cost
+
+        # Net profit per contract (for display purposes)
+        net_profit_per_contract = MarketScanner.calc_net_profit(entry_price_cents)
         profit_if_win = contracts * net_profit_per_contract
 
         return MartingaleBet(
@@ -262,17 +302,21 @@ class MartingaleCalculator:
     ) -> list[MartingaleBet]:
         """
         Calculate the full martingale sequence for planning/display.
-        Shows base + 2 recovery bets.
+        Shows base + 2 recovery bets (3 bets total) using LOSS-ONLY recovery formula.
+
+        Recovery formula: contracts = total_loss / (1 - price)
         """
         sequence = []
-        net_profit_per_contract = MarketScanner.calc_net_profit(entry_price_cents)
+
+        # Use recovery price cap for display (recovery bets use 85c max)
+        recovery_price = min(entry_price_cents, self.RECOVERY_PRICE_CAP)
         price_dollars = entry_price_cents / 100
-        return_mult = self.get_return_multiplier(entry_price_cents)
+        recovery_price_dollars = recovery_price / 100
 
         # Calculate base bet
-        base_dollars = self.calculate_max_base_bet(bankroll, entry_price_cents)
-        base_contracts = max(1, int(base_dollars / price_dollars))
+        base_contracts = self.find_max_safe_contracts(bankroll)
         base_cost = base_contracts * price_dollars
+        net_profit_per_contract = MarketScanner.calc_net_profit(entry_price_cents)
         base_profit = base_contracts * net_profit_per_contract
 
         total_risk = base_cost
@@ -286,29 +330,28 @@ class MartingaleCalculator:
             net_profit_if_win=base_profit,
         ))
 
-        # Calculate recovery bets
+        # Calculate recovery bets using LOSS-ONLY formula
         cumulative_loss = base_cost
-        original_expected_profit = base_profit
+        profit_per_dollar = 1 - recovery_price_dollars  # At 85c, profit is 15c per $1
 
         for bet_num in range(2, self.max_consecutive_losses + 2):
-            # Need to recover: cumulative losses + original expected profit
-            needed_profit = cumulative_loss + original_expected_profit
-
-            if net_profit_per_contract <= 0:
+            # LOSS-ONLY RECOVERY: contracts = loss / (1 - price)
+            if profit_per_dollar <= 0:
                 contracts = 1
             else:
-                contracts = math.ceil(needed_profit / net_profit_per_contract)
+                contracts = math.ceil(cumulative_loss / profit_per_dollar)
 
-            cost = contracts * price_dollars
+            cost = contracts * recovery_price_dollars
             total_risk += cost
-            profit_if_win = contracts * net_profit_per_contract
+            r_net_profit_per = MarketScanner.calc_net_profit(recovery_price)
+            profit_if_win = contracts * r_net_profit_per
 
             sequence.append(MartingaleBet(
                 bet_number=bet_num,
                 contracts=contracts,
                 cost_dollars=cost,
                 total_risk_dollars=total_risk,
-                entry_price_cents=entry_price_cents,
+                entry_price_cents=recovery_price,  # Recovery uses capped price
                 net_profit_if_win=profit_if_win,
             ))
 
@@ -317,86 +360,72 @@ class MartingaleCalculator:
         return sequence
 
     def print_sequence(self, bankroll: float, entry_price_cents: int):
-        """Print the full martingale sequence."""
+        """Print the full martingale sequence with loss-only recovery."""
         sequence = self.calculate_full_sequence(bankroll, entry_price_cents)
         return_pct = self.get_return_multiplier(entry_price_cents) * 100
 
-        print(f"\n{'='*70}")
-        print(f"MARTINGALE SEQUENCE @ {entry_price_cents}c ({return_pct:.1f}% return)")
+        print(f"\n{'='*80}")
+        print(f"ALTERED MARTINGALE SEQUENCE - LOSS-ONLY RECOVERY")
+        print(f"Base entry @ {entry_price_cents}c | Recovery capped @ {self.RECOVERY_PRICE_CAP}c")
         print(f"Bankroll: ${bankroll:.2f}")
-        print(f"{'='*70}")
-        print(f"{'Bet':<20} {'Contracts':<12} {'Cost':<12} {'Total Risk':<12} {'If Win':<12}")
-        print("-" * 70)
+        print(f"{'='*80}")
+        print(f"{'Bet':<20} {'@Price':<8} {'Contracts':<12} {'Cost':<12} {'Total Risk':<12} {'If Win':<12}")
+        print("-" * 80)
 
         for bet in sequence:
             status = "OK" if bet.total_risk_dollars <= bankroll else "BUST"
-            label = "Base" if bet.bet_number == 1 else f"Recovery {bet.bet_number - 1}"
+            label = "Base" if bet.bet_number == 1 else f"Recovery Stage {bet.bet_number - 1}"
             print(
                 f"{label:<20} "
+                f"{bet.entry_price_cents}c     "
                 f"{bet.contracts:<12} "
                 f"${bet.cost_dollars:<11.2f} "
                 f"${bet.total_risk_dollars:<11.2f} "
                 f"+${bet.net_profit_if_win:<10.2f} [{status}]"
             )
 
-        print("-" * 70)
+        print("-" * 80)
         can_survive = sequence[-1].total_risk_dollars <= bankroll
-        print(f"Can survive 2 losses: {'YES' if can_survive else 'NO'}")
+        print(f"Can survive 2 consecutive losses: {'YES' if can_survive else 'NO'}")
         print(f"Base bet is {sequence[0].cost_dollars / bankroll * 100:.1f}% of bankroll")
+        print(f"Total multiplier: {sequence[-1].total_risk_dollars / sequence[0].cost_dollars:.1f}x base bet")
 
-    def print_survival_analysis(self, bankroll: float, min_price: int = 80, max_price: int = 90):
-        """Print survival analysis for ALL prices in the range."""
-        print(f"\n{'='*80}")
-        print(f"TRUE MARTINGALE SURVIVAL ANALYSIS - ${bankroll:.2f} bankroll")
-        print(f"{'='*80}")
-        print(f"{'Price':<8} {'Return%':<10} {'Base':<12} {'R1':<12} {'R2':<12} {'Total Risk':<14} {'Status':<10}")
-        print("-" * 80)
+    def print_survival_analysis(self, bankroll: float):
+        """Print survival analysis using loss-only recovery at 85c cap."""
+        recovery_price = self.RECOVERY_PRICE_CAP
+        price_dollars = recovery_price / 100
+        profit_per_dollar = 1 - price_dollars
 
-        safe_contracts = self.find_max_safe_contracts(bankroll, min_price, max_price)
-        worst_case_price = None
-        max_total_risk = 0
+        print(f"\n{'='*90}")
+        print(f"ALTERED MARTINGALE SURVIVAL ANALYSIS - LOSS-ONLY RECOVERY")
+        print(f"Bankroll: ${bankroll:.2f} | Recovery capped @ {recovery_price}c")
+        print(f"{'='*90}")
+        print(f"{'Bet':<15} {'Contracts':<12} {'Cost':<12} {'Cumulative':<14} {'Status':<10}")
+        print("-" * 90)
 
-        for price in range(min_price, max_price + 1):
-            net_profit_per = MarketScanner.calc_net_profit(price)
-            return_pct = (net_profit_per / (price / 100)) * 100
-            price_dollars = price / 100
+        safe_contracts = self.find_max_safe_contracts(bankroll)
+        cumulative_loss = 0
 
-            # Calculate sequence at this price with safe_contracts
-            base_cost = safe_contracts * price_dollars
-            base_profit = safe_contracts * net_profit_per
+        # Base bet
+        base_cost = safe_contracts * price_dollars
+        cumulative_loss = base_cost
+        status = "OK" if cumulative_loss <= bankroll else "BUST!"
+        print(f"Base           {safe_contracts:<12} ${base_cost:<11.2f} ${cumulative_loss:<13.2f} {status}")
 
-            # Recovery 1
-            r1_needed = base_cost + base_profit
-            r1_contracts = math.ceil(r1_needed / net_profit_per) if net_profit_per > 0 else 1
-            r1_cost = r1_contracts * price_dollars
+        # Recovery stages (2 stages for 3 bets total)
+        for stage in range(1, 3):  # 2 recovery stages
+            contracts = math.ceil(cumulative_loss / profit_per_dollar)
+            cost = contracts * price_dollars
+            cumulative_loss += cost
+            status = "OK" if cumulative_loss <= bankroll else "BUST!"
+            print(f"Recovery {stage}     {contracts:<12} ${cost:<11.2f} ${cumulative_loss:<13.2f} {status}")
 
-            # Recovery 2
-            r2_needed = base_cost + r1_cost + base_profit
-            r2_contracts = math.ceil(r2_needed / net_profit_per) if net_profit_per > 0 else 1
-            r2_cost = r2_contracts * price_dollars
-
-            total_risk = base_cost + r1_cost + r2_cost
-            status = "OK" if total_risk <= bankroll else "BUST!"
-
-            if total_risk > max_total_risk:
-                max_total_risk = total_risk
-                worst_case_price = price
-
-            print(
-                f"{price}c      "
-                f"{return_pct:<10.1f} "
-                f"{safe_contracts}@${base_cost:<7.2f} "
-                f"{r1_contracts}@${r1_cost:<7.2f} "
-                f"{r2_contracts}@${r2_cost:<7.2f} "
-                f"${total_risk:<13.2f} "
-                f"{status}"
-            )
-
-        print("-" * 80)
+        print("-" * 90)
         print(f"SAFE BASE CONTRACTS: {safe_contracts}")
-        print(f"WORST CASE: {worst_case_price}c with ${max_total_risk:.2f} total risk")
-        print(f"BUFFER: ${bankroll - max_total_risk:.2f} remaining")
-        print(f"{'='*80}")
+        print(f"TOTAL RISK (all 3 bets lose): ${cumulative_loss:.2f}")
+        print(f"BUFFER REMAINING: ${bankroll - cumulative_loss:.2f}")
+        print(f"MULTIPLIER: {cumulative_loss / base_cost:.1f}x base bet")
+        print(f"{'='*90}")
 
     def verify_true_martingale(self, base_contracts: int = 3, min_price: int = 80, max_price: int = 90):
         """

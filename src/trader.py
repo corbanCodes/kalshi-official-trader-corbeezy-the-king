@@ -269,23 +269,58 @@ class Trader:
         if not self.can_trade():
             return False
 
+        # Check if we're in recovery mode
+        in_recovery = self.tracker.martingale.in_recovery
+
         # Scan for opportunities
         self.log("Scanning markets...")
         opportunity = self.scanner.find_best_opportunity()
 
         if not opportunity:
             # Show recovery state in logs so user can see it on cloud
-            if self.tracker.martingale.in_recovery:
+            if in_recovery:
                 recovery_target = self.tracker.martingale.get_recovery_target_cents() / 100
                 self.log(
-                    f"No opportunities in 80-90c range | RECOVERY MODE: "
+                    f"No opportunities in price range | RECOVERY MODE: "
                     f"{self.tracker.martingale.consecutive_losses} losses, "
                     f"need ${recovery_target:.2f} to recover",
                     "WARN"
                 )
             else:
-                self.log("No opportunities in 80-90c range")
+                self.log("No opportunities in 80-92c range")
             return False
+
+        # RECOVERY MODE: Apply additional filters
+        if in_recovery:
+            # Filter 1: Price cap at 85c for recovery bets
+            recovery_cap = self.config.trading.recovery_price_cap
+            if opportunity.entry_price > recovery_cap:
+                recovery_target = self.tracker.martingale.get_recovery_target_cents() / 100
+                self.log(
+                    f"RECOVERY MODE: Skipping {opportunity.entry_price}c (cap is {recovery_cap}c) | "
+                    f"Need ${recovery_target:.2f} to recover",
+                    "WARN"
+                )
+                return False
+
+            # Filter 2: BTC distance filter (0.15% minimum)
+            min_distance = self.config.trading.min_btc_distance_pct
+            passes, reason, btc_price = KrakenClient.passes_distance_filter(
+                opportunity.floor_strike,
+                opportunity.side,
+                min_distance
+            )
+
+            if not passes:
+                recovery_target = self.tracker.martingale.get_recovery_target_cents() / 100
+                self.log(
+                    f"RECOVERY MODE: Distance filter failed - {reason} | "
+                    f"Need ${recovery_target:.2f} to recover",
+                    "WARN"
+                )
+                return False
+
+            self.log(f"RECOVERY MODE: {reason} | BTC ${btc_price:,.2f}", "INFO")
 
         self.log(f"Found: {opportunity}")
 

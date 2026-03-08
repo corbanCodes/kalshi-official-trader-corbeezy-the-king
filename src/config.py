@@ -15,18 +15,22 @@ load_dotenv()
 class TradingConfig:
     """Trading strategy configuration."""
 
-    # Entry criteria
+    # Entry criteria - Base strategy
     min_entry_price: int = 80  # cents
-    max_entry_price: int = 90  # cents
+    max_entry_price: int = 92  # cents (changed from 90)
     optimal_min_price: int = 82  # sweet spot
     optimal_max_price: int = 88  # sweet spot
+
+    # Entry criteria - Recovery mode
+    recovery_price_cap: int = 85  # cents (more conservative for recovery)
+    min_btc_distance_pct: float = 0.15  # 0.15% BTC distance filter for recovery
 
     # Timing
     wait_minutes: int = 10  # wait 10 minutes into 15-min window
     window_duration: int = 15  # 15-minute windows
 
     # Risk management
-    max_consecutive_losses: int = 2
+    max_consecutive_losses: int = 2  # 2 recovery attempts (3 bets total)
     bankroll_bet_percentage: float = 0.03  # 3% of bankroll per base bet
 
     # Order execution
@@ -34,6 +38,11 @@ class TradingConfig:
 
     # Martingale
     enable_martingale: bool = True
+
+    # Bankroll management (for multi-bot setup)
+    apportioned_bankroll: float = None  # None = use full Kalshi balance
+    starting_contracts: int = None  # None = calculate dynamically
+    max_base_bet_dollars: float = None  # None = no cap
 
 
 @dataclass
@@ -85,8 +94,13 @@ def load_config() -> AppConfig:
 
     trading = TradingConfig(
         min_entry_price=int(os.getenv("MIN_ENTRY_PRICE", "80")),
-        max_entry_price=int(os.getenv("MAX_ENTRY_PRICE", "90")),
+        max_entry_price=int(os.getenv("MAX_ENTRY_PRICE", "92")),
         max_consecutive_losses=int(os.getenv("MAX_CONSECUTIVE_LOSSES", "2")),
+        recovery_price_cap=int(os.getenv("RECOVERY_PRICE_CAP", "85")),
+        min_btc_distance_pct=float(os.getenv("MIN_BTC_DISTANCE_PCT", "0.15")),
+        apportioned_bankroll=float(os.getenv("APPORTIONED_BANKROLL")) if os.getenv("APPORTIONED_BANKROLL") else None,
+        starting_contracts=int(os.getenv("STARTING_CONTRACTS")) if os.getenv("STARTING_CONTRACTS") else None,
+        max_base_bet_dollars=float(os.getenv("MAX_BASE_BET_DOLLARS")) if os.getenv("MAX_BASE_BET_DOLLARS") else None,
     )
 
     kalshi = KalshiConfig(

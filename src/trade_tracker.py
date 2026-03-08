@@ -116,8 +116,13 @@ class MartingaleState:
         self.reset()
 
     def get_recovery_target_cents(self) -> int:
-        """Get how much profit we need to recover losses + original target."""
-        return self.total_loss_cents + self.base_target_profit_cents
+        """
+        Get how much we need to recover.
+
+        LOSS-ONLY RECOVERY: Just need to recover the total loss amount.
+        (Changed from loss + original profit target to save money)
+        """
+        return self.total_loss_cents
 
     def to_dict(self) -> dict:
         return asdict(self)

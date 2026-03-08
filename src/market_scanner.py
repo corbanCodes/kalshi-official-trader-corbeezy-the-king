@@ -66,7 +66,7 @@ class MarketScanner:
         self,
         client: KalshiClient,
         min_price: int = 80,
-        max_price: int = 90,
+        max_price: int = 92,  # Changed from 90 to 92 for base strategy
         wait_minutes: int = 10,
         data_dir: Path = None,
     ):
