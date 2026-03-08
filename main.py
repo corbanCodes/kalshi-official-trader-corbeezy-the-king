@@ -34,7 +34,10 @@ DASHBOARD_STATE = {
     "status": "stopped",
     "trading_enabled": False,
     "bankroll": 0,
-    "apportioned_bankroll": None,  # For multi-bot setup
+    "starting_bankroll": None,  # User-set starting amount
+    "apportioned_bankroll": None,  # Legacy - use starting_bankroll
+    "effective_bankroll": 0,  # Current bankroll for calculations (grows with wins)
+    "auto_compound": True,  # Auto-increase bankroll after wins
     "today_profit": 0,
     "total_trades": 0,
     "wins": 0,
@@ -42,7 +45,7 @@ DASHBOARD_STATE = {
     "consecutive_losses": 0,
     "in_recovery": False,
     "recovery_target": 0,
-    "recovery_stage": 0,  # 0 = not in recovery, 1-3 = recovery stage
+    "recovery_stage": 0,  # 0 = not in recovery, 1-2 = recovery stage
     "last_trade": None,
     "last_update": None,
     "recent_trades": [],
@@ -250,8 +253,80 @@ class DashboardHandler(BaseHTTPRequestHandler):
             DASHBOARD_STATE["trading_enabled"] = False
             DASHBOARD_STATE["status"] = "stopped"
             self.send_json({"success": True, "trading": False})
+        elif self.path == "/api/set-apportioned":
+            self.handle_set_apportioned()
         else:
             self.send_error(404)
+
+    def handle_set_apportioned(self):
+        """Handle setting the apportioned bankroll with auto-compound."""
+        import math
+
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body) if body else {}
+
+            amount = data.get('amount')
+            auto_compound = data.get('auto_compound', True)
+
+            # Save to dashboard state
+            DASHBOARD_STATE["starting_bankroll"] = amount
+            DASHBOARD_STATE["auto_compound"] = auto_compound
+
+            # If setting new starting bankroll, reset effective to starting
+            if amount:
+                # Only reset if this is a new setting (not already running)
+                if DASHBOARD_STATE.get("effective_bankroll", 0) == 0:
+                    DASHBOARD_STATE["effective_bankroll"] = amount
+                # If already have effective, keep it (don't reset mid-session)
+                elif DASHBOARD_STATE.get("starting_bankroll") != amount:
+                    DASHBOARD_STATE["effective_bankroll"] = amount
+
+            # Calculate safe contracts
+            effective_bankroll = DASHBOARD_STATE.get("effective_bankroll") or amount or DASHBOARD_STATE.get("bankroll", 0)
+
+            if effective_bankroll <= 0:
+                self.send_json({"success": False, "error": "Invalid bankroll amount"})
+                return
+
+            # Calculate using loss-only formula at 85c
+            price = 0.85
+            profit_per_dollar = 0.15
+
+            safe_contracts = 0
+            max_risk = 0
+
+            for contracts in range(100, 0, -1):
+                base_cost = contracts * price
+                cum = base_cost
+
+                r1 = math.ceil(cum / profit_per_dollar)
+                cum += r1 * price
+
+                r2 = math.ceil(cum / profit_per_dollar)
+                cum += r2 * price
+
+                if cum <= effective_bankroll:
+                    safe_contracts = contracts
+                    max_risk = cum
+                    break
+
+            # Profit per win (rough estimate with fees)
+            profit_per_win = safe_contracts * 0.15 * 0.93  # ~7% fee reduction
+
+            self.send_json({
+                "success": True,
+                "starting_bankroll": amount,
+                "effective_bankroll": effective_bankroll,
+                "auto_compound": auto_compound,
+                "safe_contracts": safe_contracts,
+                "max_risk": max_risk,
+                "profit_per_win": profit_per_win,
+            })
+
+        except Exception as e:
+            self.send_json({"success": False, "error": str(e)})
 
     def send_json(self, data):
         self.send_response(200)
@@ -335,6 +410,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
     <div id="recoveryBanner" style="display:none; background:rgba(255,107,107,0.15); border:1px solid #ff6b6b; border-radius:8px; padding:15px; margin-bottom:20px;">
         <strong style="color:#ff6b6b;">RECOVERY MODE ACTIVE</strong>
         <span id="recoveryInfo" style="margin-left:20px;">Stage 1 - Need to recover $0.00</span>
+    </div>
+
+    <div class="trades" style="margin-bottom:20px;">
+        <h3 style="margin-bottom:15px; color:#888;">Bankroll Management</h3>
+        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:20px; align-items:end;">
+            <div>
+                <label style="color:#888; font-size:0.85rem;">Starting Bankroll ($)</label>
+                <input type="number" id="apportionedInput" placeholder="Use full balance"
+                    style="width:100%; padding:10px; background:#0a0a0a; border:1px solid #333; border-radius:5px; color:#e0e0e0; font-family:monospace; margin-top:5px;">
+                <div style="margin-top:8px;">
+                    <label style="cursor:pointer;">
+                        <input type="checkbox" id="autoCompoundCheck" checked style="margin-right:8px;">
+                        <span style="color:#6bcb77; font-size:0.85rem;">Auto-compound wins</span>
+                    </label>
+                </div>
+            </div>
+            <div>
+                <button onclick="saveApportioned()" class="btn" style="background:#6bcb77; color:#000; width:100%;">Save & Calculate</button>
+            </div>
+            <div id="safetyInfo" style="padding:10px; background:#1a1a1a; border-radius:5px; font-size:0.9rem;">
+                <div>Safe contracts: <span id="safeContracts" style="color:#6bcb77;">--</span></div>
+                <div>Max risk: <span id="maxRisk" style="color:#ffd93d;">--</span></div>
+                <div>Profit/win: <span id="profitPerWin" style="color:#6bcb77;">--</span></div>
+            </div>
+        </div>
+        <div id="compoundStatus" style="margin-top:10px; padding:10px; background:#1a2a1a; border-radius:5px; display:none;">
+            <span style="color:#6bcb77;">Starting: $<span id="startingBankroll">0</span></span>
+            <span style="margin-left:20px;">Current: $<span id="currentBankroll" style="color:#ffd93d;">0</span></span>
+            <span style="margin-left:20px;">Growth: <span id="growthPct" style="color:#6bcb77;">+0%</span></span>
+        </div>
+        <div id="apportionedStatus" style="margin-top:10px; font-size:0.85rem; color:#888;"></div>
     </div>
 
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
@@ -437,6 +543,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         recoveryBanner.style.display = 'none';
                     }
 
+                    // Update compound status if active
+                    const starting = data.starting_bankroll;
+                    const effective = data.effective_bankroll;
+                    if (starting && effective) {
+                        document.getElementById('compoundStatus').style.display = 'block';
+                        document.getElementById('startingBankroll').textContent = starting.toFixed(2);
+                        document.getElementById('currentBankroll').textContent = effective.toFixed(2);
+                        const growth = ((effective - starting) / starting * 100);
+                        const growthEl = document.getElementById('growthPct');
+                        growthEl.textContent = (growth >= 0 ? '+' : '') + growth.toFixed(1) + '%';
+                        growthEl.style.color = growth >= 0 ? '#6bcb77' : '#ff6b6b';
+
+                        // Update safety info with current effective bankroll
+                        calculateSafety(effective);
+                    }
+
                     // Status badge
                     const status = data.status || 'stopped';
                     const statusBadge = document.getElementById('statusBadge');
@@ -503,11 +625,98 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 });
         }
 
+        function saveApportioned() {
+            const value = document.getElementById('apportionedInput').value;
+            const amount = value ? parseFloat(value) : null;
+            const autoCompound = document.getElementById('autoCompoundCheck').checked;
+
+            fetch('/api/set-apportioned', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({amount: amount, auto_compound: autoCompound})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    document.getElementById('safeContracts').textContent = data.safe_contracts;
+                    document.getElementById('maxRisk').textContent = '$' + data.max_risk.toFixed(2);
+                    document.getElementById('profitPerWin').textContent = '$' + data.profit_per_win.toFixed(2);
+                    document.getElementById('apportionedStatus').innerHTML =
+                        '<span style="color:#6bcb77;">Saved! ' + (autoCompound ? 'Auto-compound ON' : 'Fixed bankroll') + '</span>';
+
+                    // Show compound status
+                    if (amount) {
+                        document.getElementById('compoundStatus').style.display = 'block';
+                        document.getElementById('startingBankroll').textContent = amount.toFixed(2);
+                        document.getElementById('currentBankroll').textContent = data.effective_bankroll.toFixed(2);
+                        const growth = ((data.effective_bankroll - amount) / amount * 100);
+                        document.getElementById('growthPct').textContent = (growth >= 0 ? '+' : '') + growth.toFixed(1) + '%';
+                    }
+                } else {
+                    document.getElementById('apportionedStatus').innerHTML =
+                        '<span style="color:#ff6b6b;">Error: ' + data.error + '</span>';
+                }
+            });
+        }
+
+        function loadApportioned() {
+            fetch('/api/status')
+            .then(r => r.json())
+            .then(data => {
+                if (data.starting_bankroll) {
+                    document.getElementById('apportionedInput').value = data.starting_bankroll;
+                }
+                if (data.auto_compound !== undefined) {
+                    document.getElementById('autoCompoundCheck').checked = data.auto_compound;
+                }
+
+                // Show compound status if active
+                if (data.starting_bankroll && data.effective_bankroll) {
+                    document.getElementById('compoundStatus').style.display = 'block';
+                    document.getElementById('startingBankroll').textContent = data.starting_bankroll.toFixed(2);
+                    document.getElementById('currentBankroll').textContent = data.effective_bankroll.toFixed(2);
+                    const growth = ((data.effective_bankroll - data.starting_bankroll) / data.starting_bankroll * 100);
+                    document.getElementById('growthPct').textContent = (growth >= 0 ? '+' : '') + growth.toFixed(1) + '%';
+                    calculateSafety(data.effective_bankroll);
+                } else {
+                    const bankroll = data.bankroll || 0;
+                    if (bankroll > 0) {
+                        calculateSafety(bankroll);
+                    }
+                }
+            });
+        }
+
+        function calculateSafety(bankroll) {
+            // Quick client-side calculation for display
+            const price = 0.85;
+            const profitPerDollar = 0.15;
+
+            for (let contracts = 100; contracts > 0; contracts--) {
+                const baseCost = contracts * price;
+                let cum = baseCost;
+
+                const r1 = Math.ceil(cum / profitPerDollar);
+                cum += r1 * price;
+
+                const r2 = Math.ceil(cum / profitPerDollar);
+                cum += r2 * price;
+
+                if (cum <= bankroll) {
+                    document.getElementById('safeContracts').textContent = contracts;
+                    document.getElementById('maxRisk').textContent = '$' + cum.toFixed(2);
+                    document.getElementById('profitPerWin').textContent = '$' + (contracts * 0.15 * 0.93).toFixed(2);
+                    break;
+                }
+            }
+        }
+
         // Update every 500ms via AJAX (no page reload)
         setInterval(updateStatus, 500);
 
         // Initial load
         updateStatus();
+        loadApportioned();
     </script>
 </body>
 </html>"""
@@ -533,12 +742,21 @@ def update_dashboard(trader):
     recovery_target = trader.tracker.martingale.get_recovery_target_cents() / 100 if in_recovery else 0
     recovery_stage = trader.tracker.martingale.consecutive_losses if in_recovery else 0
 
-    # Get apportioned bankroll from config if set
-    apportioned = trader.config.trading.apportioned_bankroll
+    # Get starting bankroll from dashboard state
+    starting = DASHBOARD_STATE.get("starting_bankroll")
+
+    # Calculate effective bankroll for trading
+    # If we have a starting bankroll set, use effective_bankroll (which compounds)
+    # Otherwise use full Kalshi balance
+    if starting:
+        # Keep existing effective_bankroll (it compounds), don't reset it
+        effective_bankroll = DASHBOARD_STATE.get("effective_bankroll") or starting
+    else:
+        effective_bankroll = trader.state.bankroll
 
     DASHBOARD_STATE.update({
         "bankroll": trader.state.bankroll,
-        "apportioned_bankroll": apportioned,
+        "effective_bankroll": effective_bankroll,
         "today_profit": trader.state.total_profit,
         "total_trades": trader.state.total_trades,
         "wins": trader.state.total_wins,
@@ -549,6 +767,9 @@ def update_dashboard(trader):
         "recovery_stage": recovery_stage,
         "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })
+
+    # Update trader's effective bankroll for calculations
+    trader.effective_bankroll = effective_bankroll
 
 
 def cmd_run():
@@ -644,6 +865,15 @@ def cmd_run():
                     "time": datetime.now().strftime("%H:%M:%S"),
                     "profit": trade_profit,
                 })
+
+                # Auto-compound: increase effective bankroll after wins
+                if trade_profit > 0 and DASHBOARD_STATE.get("auto_compound", True):
+                    current_effective = DASHBOARD_STATE.get("effective_bankroll", 0)
+                    if current_effective > 0:
+                        DASHBOARD_STATE["effective_bankroll"] = current_effective + trade_profit
+                        trader.effective_bankroll = DASHBOARD_STATE["effective_bankroll"]
+                        log_activity(f"Auto-compound: bankroll now ${DASHBOARD_STATE['effective_bankroll']:.2f}")
+
                 update_dashboard(trader)
                 time.sleep(2)
             else:

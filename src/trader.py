@@ -89,6 +89,9 @@ class Trader:
         self.refresh_bankroll()
         self.state.session_start = datetime.now(timezone.utc).isoformat()
 
+        # Effective bankroll for calculations (can be overridden by apportioned amount)
+        self.effective_bankroll = self.config.trading.apportioned_bankroll or self.state.bankroll
+
         # Logging
         self.log_path = self.config.logs_dir / f"trades_{datetime.now().strftime('%Y%m%d')}.json"
 
@@ -131,27 +134,36 @@ class Trader:
             self.log("BUST - Max consecutive losses exceeded", "ERROR")
             return False
 
-        # Check bankroll
-        if self.state.bankroll < 10:  # Minimum viable bankroll
-            self.log("Bankroll too low", "ERROR")
+        # Check real bankroll (must have enough to execute)
+        if self.state.bankroll < 10:
+            self.log("Real bankroll too low", "ERROR")
+            return False
+
+        # Check effective bankroll (apportioned limit)
+        effective = getattr(self, 'effective_bankroll', self.state.bankroll)
+        if effective < 10:
+            self.log(f"Apportioned bankroll too low (${effective:.2f})", "ERROR")
             return False
 
         return True
 
     def calculate_bet(self, opportunity: TradingOpportunity) -> Optional[MartingaleBet]:
         """Calculate the next bet based on current state."""
+        # Use effective bankroll (apportioned or full)
+        bankroll = getattr(self, 'effective_bankroll', self.state.bankroll)
+
         bet = self.martingale.calculate_next_bet(
-            bankroll=self.state.bankroll,
+            bankroll=bankroll,
             entry_price_cents=opportunity.entry_price,
         )
 
         if not bet:
-            self.log("Cannot calculate bet - insufficient bankroll for recovery", "ERROR")
+            self.log(f"Cannot calculate bet - insufficient bankroll (${bankroll:.2f}) for recovery", "ERROR")
             return None
 
-        # Verify we can afford
+        # Verify we can afford with REAL balance (not apportioned)
         if bet.cost_dollars > self.state.bankroll:
-            self.log(f"Bet cost ${bet.cost_dollars:.2f} exceeds bankroll ${self.state.bankroll:.2f}", "ERROR")
+            self.log(f"Bet cost ${bet.cost_dollars:.2f} exceeds real bankroll ${self.state.bankroll:.2f}", "ERROR")
             return None
 
         return bet
