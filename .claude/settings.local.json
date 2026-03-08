@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(python3 -m py_compile:*)",
-      "Bash(python3 -c \"\nfrom src.martingale import MartingaleCalculator\n\n# Test with $450 bankroll\ncalc = MartingaleCalculator\\(max_consecutive_losses=3\\)\n\nprint\\(''=''*70\\)\nprint\\(''ALTERED MARTINGALE TEST - LOSS-ONLY RECOVERY''\\)\nprint\\(''=''*70\\)\n\n# Print survival analysis\ncalc.print_survival_analysis\\(450.0\\)\n\n# Print full sequence\ncalc.print_sequence\\(450.0, 85\\)\n\")"
+      "Bash(python3 -c \"\nfrom src.martingale import MartingaleCalculator\n\n# Test with $450 bankroll\ncalc = MartingaleCalculator\\(max_consecutive_losses=3\\)\n\nprint\\(''=''*70\\)\nprint\\(''ALTERED MARTINGALE TEST - LOSS-ONLY RECOVERY''\\)\nprint\\(''=''*70\\)\n\n# Print survival analysis\ncalc.print_survival_analysis\\(450.0\\)\n\n# Print full sequence\ncalc.print_sequence\\(450.0, 85\\)\n\")",
+      "Bash(git add:*)",
+      "Bash(git fetch:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ]
   }
 }

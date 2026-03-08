@@ -274,17 +274,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             DASHBOARD_STATE["starting_bankroll"] = amount
             DASHBOARD_STATE["auto_compound"] = auto_compound
 
-            # If setting new starting bankroll, reset effective to starting
+            # When setting starting bankroll, ALWAYS use that amount (reset effective)
             if amount:
-                # Only reset if this is a new setting (not already running)
-                if DASHBOARD_STATE.get("effective_bankroll", 0) == 0:
-                    DASHBOARD_STATE["effective_bankroll"] = amount
-                # If already have effective, keep it (don't reset mid-session)
-                elif DASHBOARD_STATE.get("starting_bankroll") != amount:
-                    DASHBOARD_STATE["effective_bankroll"] = amount
+                DASHBOARD_STATE["effective_bankroll"] = amount
 
-            # Calculate safe contracts
-            effective_bankroll = DASHBOARD_STATE.get("effective_bankroll") or amount or DASHBOARD_STATE.get("bankroll", 0)
+            # Calculate safe contracts based on the STARTING amount (not full balance)
+            effective_bankroll = amount if amount else DASHBOARD_STATE.get("bankroll", 0)
 
             if effective_bankroll <= 0:
                 self.send_json({"success": False, "error": "Invalid bankroll amount"})
@@ -746,17 +741,18 @@ def update_dashboard(trader):
     starting = DASHBOARD_STATE.get("starting_bankroll")
 
     # Calculate effective bankroll for trading
-    # If we have a starting bankroll set, use effective_bankroll (which compounds)
+    # If we have a starting bankroll set, use effective_bankroll (which compounds from starting)
     # Otherwise use full Kalshi balance
     if starting:
-        # Keep existing effective_bankroll (it compounds), don't reset it
+        # Use effective_bankroll which starts at 'starting' and compounds with wins
         effective_bankroll = DASHBOARD_STATE.get("effective_bankroll") or starting
     else:
+        # No starting set = use full Kalshi balance
         effective_bankroll = trader.state.bankroll
 
+    # DON'T overwrite effective_bankroll in the update - it's managed separately
     DASHBOARD_STATE.update({
         "bankroll": trader.state.bankroll,
-        "effective_bankroll": effective_bankroll,
         "today_profit": trader.state.total_profit,
         "total_trades": trader.state.total_trades,
         "wins": trader.state.total_wins,
@@ -768,8 +764,12 @@ def update_dashboard(trader):
         "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })
 
+    # Only set effective_bankroll if not using starting bankroll
+    if not starting:
+        DASHBOARD_STATE["effective_bankroll"] = effective_bankroll
+
     # Update trader's effective bankroll for calculations
-    trader.effective_bankroll = effective_bankroll
+    trader.effective_bankroll = DASHBOARD_STATE.get("effective_bankroll", trader.state.bankroll)
 
 
 def cmd_run():
