@@ -56,6 +56,7 @@ DASHBOARD_STATE = {
     "activity_log": [],
     "current_market": None,
     "market_prices": {},
+    "pending_trade": None,  # Shows trade waiting for settlement
 }
 
 def log_activity(msg):
@@ -461,6 +462,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         <div id="apportionedStatus" style="margin-top:10px; font-size:0.85rem; color:#888;"></div>
     </div>
 
+    <div id="pendingTradeBanner" style="display:none; background:rgba(255,217,61,0.15); border:1px solid #ffd93d; border-radius:8px; padding:15px; margin-bottom:20px;">
+        <strong style="color:#ffd93d;">⏳ PENDING TRADE</strong>
+        <span id="pendingTradeInfo" style="margin-left:20px;">Waiting for settlement...</span>
+    </div>
+
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
         <div class="trades">
             <h3 style="margin-bottom: 15px; color: #888;">Recent Trades</h3>
@@ -611,12 +617,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     const logs = data.activity_log || [];
                     document.getElementById('activityLog').innerHTML = logs.slice(-10).join('<br>') || 'No activity yet';
 
-                    // Recent trades
+                    // Pending trade banner
+                    const pending = data.pending_trade;
+                    const pendingBanner = document.getElementById('pendingTradeBanner');
+                    if (pending) {
+                        pendingBanner.style.display = 'block';
+                        document.getElementById('pendingTradeInfo').innerHTML =
+                            '<strong>' + pending.side.toUpperCase() + '</strong> ' +
+                            pending.contracts + ' contract @ ' + pending.fill_price + 'c | ' +
+                            'Cost: $' + pending.cost.toFixed(2) + ' | Waiting for settlement...';
+                    } else {
+                        pendingBanner.style.display = 'none';
+                    }
+
+                    // Recent trades with details
                     const trades = data.recent_trades || [];
                     let tradesHtml = '';
-                    trades.slice(-10).forEach(t => {
+                    trades.slice(-10).reverse().forEach(t => {
                         const cls = (t.profit || 0) > 0 ? 'win' : 'loss';
-                        tradesHtml += '<div class="trade ' + cls + '"><span>' + (t.time || '') + '</span><span>$' + (t.profit >= 0 ? '+' : '') + (t.profit || 0).toFixed(2) + '</span></div>';
+                        const side = t.side ? t.side.toUpperCase() : '';
+                        const slip = t.slippage !== undefined ? (t.slippage > 0 ? '+' + t.slippage : t.slippage) + 'c' : '';
+                        const details = t.ticker ?
+                            '<div style="font-size:0.75rem;color:#666;margin-top:2px;">' + side + ' @ ' + (t.fill_price || '?') + 'c | slip: ' + slip + '</div>' : '';
+                        tradesHtml += '<div class="trade ' + cls + '" style="flex-direction:column;align-items:flex-start;padding:8px 10px;">' +
+                            '<div style="display:flex;justify-content:space-between;width:100%;">' +
+                            '<span>' + (t.time || '') + '</span>' +
+                            '<span style="color:' + (t.profit >= 0 ? '#6bcb77' : '#ff6b6b') + ';font-weight:bold;">$' + (t.profit >= 0 ? '+' : '') + (t.profit || 0).toFixed(2) + '</span></div>' +
+                            details + '</div>';
                     });
                     document.getElementById('tradesContainer').innerHTML = tradesHtml || '<div class="trade">No trades yet</div>';
 
@@ -875,7 +902,8 @@ def cmd_run():
                         "no_ask": m.no_ask,
                         "mins_remaining": mins_str,
                     }
-                log_activity(f"Scanned {len(crypto_markets)} 15-min crypto markets")
+                # Don't spam activity log with scan messages - only log occasionally
+                pass  # Scans visible in market prices section
             except Exception as e:
                 log_activity(f"Scan error: {e}")
 
@@ -898,16 +926,67 @@ def cmd_run():
 
             # Track profit before trade to calculate individual trade P&L
             profit_before = trader.state.total_profit
+
+            # Check for pending trade from tracker
+            if trader.tracker.trades:
+                last_trade = trader.tracker.trades[-1]
+                if last_trade.won is None:  # Not yet settled
+                    DASHBOARD_STATE["pending_trade"] = {
+                        "ticker": last_trade.ticker,
+                        "side": last_trade.side,
+                        "contracts": last_trade.contracts,
+                        "fill_price": last_trade.actual_fill_price,
+                        "cost": last_trade.cost_cents / 100,
+                        "time": last_trade.timestamp,
+                    }
+                    # Log pending state for Railway visibility
+                    print(f"[PENDING] {last_trade.side.upper()} {last_trade.contracts}x @ {last_trade.actual_fill_price}c - waiting for settlement...")
+                else:
+                    DASHBOARD_STATE["pending_trade"] = None
+
             traded = trader.run_once()
 
             if traded:
                 # Calculate this trade's profit (not cumulative)
                 trade_profit = trader.state.total_profit - profit_before
-                log_activity(f"TRADE EXECUTED! P&L: ${trade_profit:+.2f} (Total: ${trader.state.total_profit:+.2f})")
-                DASHBOARD_STATE["recent_trades"].append({
+
+                # Get the last trade details from tracker
+                last_trade = trader.tracker.trades[-1] if trader.tracker.trades else None
+
+                # === EXPLICIT LOGGING FOR RAILWAY ===
+                print("=" * 60)
+                print(f"[TRADE COMPLETE] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                if last_trade:
+                    print(f"  Ticker: {last_trade.ticker}")
+                    print(f"  Side: {last_trade.side.upper()}")
+                    print(f"  Contracts: {last_trade.contracts}")
+                    print(f"  Intended: {last_trade.intended_price}c -> Fill: {last_trade.actual_fill_price}c (slip: {last_trade.actual_fill_price - last_trade.intended_price:+d}c)")
+                    print(f"  Cost: ${last_trade.cost_cents/100:.2f} | Fee: ${last_trade.fee_cents/100:.2f}")
+                    print(f"  Result: {'WIN' if last_trade.won else 'LOSS'}")
+                    print(f"  P&L: ${trade_profit:+.2f}")
+                print("=" * 60)
+
+                trade_details = {
                     "time": datetime.now().strftime("%H:%M:%S"),
                     "profit": trade_profit,
-                })
+                }
+                if last_trade:
+                    trade_details.update({
+                        "ticker": last_trade.ticker,
+                        "side": last_trade.side,
+                        "contracts": last_trade.contracts,
+                        "intended_price": last_trade.intended_price,
+                        "fill_price": last_trade.actual_fill_price,
+                        "slippage": last_trade.actual_fill_price - last_trade.intended_price,
+                        "cost": last_trade.cost_cents / 100,
+                        "fee": last_trade.fee_cents / 100,
+                        "won": last_trade.won,
+                        "bet_number": last_trade.bet_number,
+                    })
+
+                log_activity(f"TRADE: {last_trade.side.upper() if last_trade else '?'} @ {last_trade.actual_fill_price if last_trade else '?'}c -> ${trade_profit:+.2f}")
+                DASHBOARD_STATE["recent_trades"].append(trade_details)
+                DASHBOARD_STATE["pending_trade"] = None  # Clear pending
 
                 # Auto-compound: increase effective bankroll after wins
                 if trade_profit > 0 and DASHBOARD_STATE.get("auto_compound", True):
