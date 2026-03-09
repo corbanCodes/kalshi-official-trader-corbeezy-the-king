@@ -477,7 +477,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         <div id="marketPrices" style="font-size: 0.9rem;">Loading markets...</div>
     </div>
 
-    <p class="updated">Last updated: <span id="lastUpdate">never</span> | Updates every 500ms</p>
+    <p class="updated">Last updated: <span id="lastUpdate">never</span> | Dashboard: 500ms | Scanner: 300ms</p>
 
     <script>
         let lastBankroll = 0;
@@ -918,10 +918,11 @@ def cmd_run():
                         log_activity(f"Auto-compound: bankroll now ${DASHBOARD_STATE['effective_bankroll']:.2f}")
 
                 update_dashboard(trader)
-                time.sleep(2)
+                time.sleep(1)  # 1s pause after trade to let settlement process
             else:
-                log_activity("No opportunities in 80-92c range")
-                time.sleep(1)  # Fast 1-second polling to catch quick opportunities
+                # NO opportunities found - poll faster to catch them
+                # Don't log every scan - too spammy at 300ms polling
+                time.sleep(0.3)  # 300ms polling to catch fast-moving opportunities
 
     except Exception as e:
         DASHBOARD_STATE["status"] = "error"

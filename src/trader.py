@@ -95,6 +95,10 @@ class Trader:
         # Logging
         self.log_path = self.config.logs_dir / f"trades_{datetime.now().strftime('%Y%m%d')}.json"
 
+        # Rate limiting for scan logs (don't spam at 300ms polling)
+        self._last_scan_log_time = 0
+        self._scan_log_interval = 10  # Only log "no opportunities" every 10 seconds
+
     def log(self, message: str, level: str = "INFO"):
         """Log a message with timestamp."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -371,22 +375,24 @@ class Trader:
         # Check if we're in recovery mode
         in_recovery = self.tracker.martingale.in_recovery
 
-        # Scan for opportunities
-        self.log("Scanning markets...")
+        # Scan for opportunities (don't log every scan - too spammy at 300ms polling)
         opportunity = self.scanner.find_best_opportunity()
 
         if not opportunity:
-            # Show recovery state in logs so user can see it on cloud
-            if in_recovery:
-                recovery_target = self.tracker.martingale.get_recovery_target_cents() / 100
-                self.log(
-                    f"No opportunities in price range | RECOVERY MODE: "
-                    f"{self.tracker.martingale.consecutive_losses} losses, "
-                    f"need ${recovery_target:.2f} to recover",
-                    "WARN"
-                )
-            else:
-                self.log("No opportunities in 80-92c range")
+            # Rate-limit "no opportunities" logging to avoid spam
+            now = time.time()
+            if now - self._last_scan_log_time >= self._scan_log_interval:
+                self._last_scan_log_time = now
+                if in_recovery:
+                    recovery_target = self.tracker.martingale.get_recovery_target_cents() / 100
+                    self.log(
+                        f"No opportunities in price range | RECOVERY MODE: "
+                        f"{self.tracker.martingale.consecutive_losses} losses, "
+                        f"need ${recovery_target:.2f} to recover",
+                        "WARN"
+                    )
+                else:
+                    self.log("No opportunities in 80-92c range (polling every 300ms)")
             return False
 
         # RECOVERY MODE: Apply additional filters
