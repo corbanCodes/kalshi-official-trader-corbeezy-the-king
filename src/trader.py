@@ -266,46 +266,38 @@ class Trader:
             self.log(f"Waiting {wait_seconds:.0f}s for market close...", "SETTLE")
             time.sleep(wait_seconds + 5)  # Add 5 second buffer for settlement
 
-        # Poll Kalshi for official settlement result
-        print("[SETTLEMENT] Polling Kalshi API for official result...")
-        self.log("Polling Kalshi API for official settlement...", "SETTLE")
-        result = None
-        settlement_source = "kalshi"
-        for attempt in range(60):  # Try for up to 5 minutes (60 * 5s = 300s)
-            result = self.executor.check_settlement(tracked.ticker)
-            if result:
-                print(f"[SETTLEMENT] Kalshi says: {result.upper()}")
-                self.log(f"KALSHI OFFICIAL SETTLEMENT: {result.upper()}", "SETTLE")
-                break
-            if attempt % 6 == 0 and attempt > 0:  # Log every 30 seconds
-                self.log(f"Still waiting for Kalshi settlement... ({attempt * 5}s elapsed)", "SETTLE")
-            time.sleep(5)
+        # Immediate settlement using Kraken price (no waiting for Kalshi API)
+        print("[SETTLEMENT] Fetching BTC price from Kraken for immediate settlement...")
+        self.log("Fetching Kraken BTC price for settlement...", "SETTLE")
 
-        if not result:
-            # Fallback to Kraken if Kalshi settlement not available after 5 minutes
-            self.log("KALSHI TIMEOUT: No settlement after 5 min, using Kraken fallback", "WARN")
-            settlement_source = "kraken_fallback"
-            btc_price = KrakenClient.get_btc_price()
-            if btc_price:
-                self.log(f"Kraken BTC price: ${btc_price:,.2f}", "SETTLE")
-                self.log(f"Strike price: ${tracked.floor_strike:,.2f}", "SETTLE")
-                # For NO bets: win if BTC < strike
-                # For YES bets: win if BTC >= strike
-                if tracked.side == "no":
-                    result = "no" if btc_price < tracked.floor_strike else "yes"
-                    self.log(f"NO bet: BTC ${btc_price:,.2f} {'<' if btc_price < tracked.floor_strike else '>='} strike ${tracked.floor_strike:,.2f} -> result={result.upper()}", "SETTLE")
-                else:
-                    result = "yes" if btc_price >= tracked.floor_strike else "no"
-                    self.log(f"YES bet: BTC ${btc_price:,.2f} {'>=' if btc_price >= tracked.floor_strike else '<'} strike ${tracked.floor_strike:,.2f} -> result={result.upper()}", "SETTLE")
-            else:
-                self.log("CRITICAL: Cannot get BTC price from Kraken!", "ERROR")
-                self.log("Cannot determine settlement - trade left unsettled", "ERROR")
-                return
+        btc_price = KrakenClient.get_btc_price()
+        if not btc_price:
+            self.log("CRITICAL: Cannot get BTC price from Kraken!", "ERROR")
+            self.log("Cannot determine settlement - trade left unsettled", "ERROR")
+            return
+
+        self.log(f"Kraken BTC price: ${btc_price:,.2f}", "SETTLE")
+        self.log(f"Strike price: ${tracked.floor_strike:,.2f}", "SETTLE")
+
+        # Determine result from Kraken price
+        # For NO bets: win if BTC < strike
+        # For YES bets: win if BTC >= strike
+        if tracked.side == "no":
+            result = "no" if btc_price < tracked.floor_strike else "yes"
+            comparison = '<' if btc_price < tracked.floor_strike else '>='
+            self.log(f"NO bet: BTC ${btc_price:,.2f} {comparison} strike ${tracked.floor_strike:,.2f} -> {result.upper()}", "SETTLE")
+        else:
+            result = "yes" if btc_price >= tracked.floor_strike else "no"
+            comparison = '>=' if btc_price >= tracked.floor_strike else '<'
+            self.log(f"YES bet: BTC ${btc_price:,.2f} {comparison} strike ${tracked.floor_strike:,.2f} -> {result.upper()}", "SETTLE")
+
+        # Store the BTC price used for settlement
+        tracked.settlement_btc_price = btc_price
 
         # Determine win/loss
         we_won = (tracked.side == result)
         self.log(f"RESULT: Market settled {result.upper()}, we bet {tracked.side.upper()} -> {'WIN' if we_won else 'LOSS'}", "SETTLE")
-        self.log(f"Settlement source: {settlement_source.upper()}", "SETTLE")
+        self.log(f"Settlement source: KRAKEN (BTC ${btc_price:,.2f})", "SETTLE")
 
         # Get actual bankroll from Kalshi
         old_bankroll = self.state.bankroll

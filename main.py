@@ -864,7 +864,26 @@ def cmd_run():
         DASHBOARD_STATE["status"] = "stopped"
         DASHBOARD_STATE["last_update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+        # Load historical trades from tracker into recent_trades
+        for trade in trader.tracker.trades[-20:]:  # Last 20 trades
+            trade_details = {
+                "time": trade.timestamp,
+                "profit": trade.net_profit_cents / 100 if trade.net_profit_cents else 0,
+                "ticker": trade.ticker,
+                "side": trade.side,
+                "contracts": trade.contracts,
+                "intended_price": trade.intended_price,
+                "fill_price": trade.actual_fill_price,
+                "slippage": trade.actual_fill_price - trade.intended_price,
+                "cost": trade.cost_cents / 100,
+                "fee": trade.fee_cents / 100,
+                "won": trade.won,
+                "bet_number": trade.bet_number,
+            }
+            DASHBOARD_STATE["recent_trades"].append(trade_details)
+
         print(f"Bankroll: ${trader.state.bankroll:.2f}")
+        print(f"Loaded {len(DASHBOARD_STATE['recent_trades'])} historical trades")
         print("Waiting for START command from dashboard...")
 
         last_balance_check = 0
