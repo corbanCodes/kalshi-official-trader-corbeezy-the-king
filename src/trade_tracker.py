@@ -78,6 +78,25 @@ class TradeRecord:
         # Net profit = payout - cost - fee
         self.net_profit_cents = self.gross_payout_cents - self.cost_cents - self.fee_cents
 
+    def settle_with_result(self, result: str) -> None:
+        """
+        Settle trade using Kalshi's official result.
+
+        Args:
+            result: "yes" or "no" from Kalshi's settlement API
+        """
+        # We win if our side matches the result
+        self.won = (self.side == result)
+
+        # Calculate payout
+        if self.won:
+            self.gross_payout_cents = self.contracts * 100  # $1 per contract
+        else:
+            self.gross_payout_cents = 0
+
+        # Net profit = payout - cost - fee
+        self.net_profit_cents = self.gross_payout_cents - self.cost_cents - self.fee_cents
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         return asdict(self)
@@ -239,6 +258,35 @@ class TradeTracker:
             # Calculate what we WOULD have profited if we won (for TRUE martingale recovery)
             # Gross payout if won = contracts * 100 cents
             # Net profit if won = gross_payout - cost - fee
+            would_have_won_gross = trade.contracts * 100
+            would_have_profited = would_have_won_gross - trade.cost_cents - trade.fee_cents
+            base_profit = would_have_profited if trade.bet_number == 1 else 0
+
+            self.martingale.record_loss(
+                loss_cents=trade.cost_cents + trade.fee_cents,
+                base_profit_cents=base_profit
+            )
+
+        self.save()
+
+    def settle_trade_with_result(self, trade: TradeRecord, result: str, bankroll_after_cents: int) -> None:
+        """
+        Settle a trade using Kalshi's official result.
+
+        Args:
+            trade: The trade to settle
+            result: "yes" or "no" from Kalshi's settlement API
+            bankroll_after_cents: Actual bankroll after settlement
+        """
+        # Calculate settlement using official result
+        trade.settle_with_result(result)
+        trade.bankroll_after_cents = bankroll_after_cents
+
+        # Update martingale state
+        if trade.won:
+            self.martingale.record_win()
+        else:
+            # Calculate what we WOULD have profited if we won (for TRUE martingale recovery)
             would_have_won_gross = trade.contracts * 100
             would_have_profited = would_have_won_gross - trade.cost_cents - trade.fee_cents
             base_profit = would_have_profited if trade.bet_number == 1 else 0

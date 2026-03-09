@@ -29,6 +29,9 @@ from src import (
     MarketScanner,
 )
 
+# Global trader reference for API access
+GLOBAL_TRADER = None
+
 # Global state for web dashboard
 DASHBOARD_STATE = {
     "status": "stopped",
@@ -255,6 +258,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json({"success": True, "trading": False})
         elif self.path == "/api/set-apportioned":
             self.handle_set_apportioned()
+        elif self.path == "/api/reset-recovery":
+            self.handle_reset_recovery()
         else:
             self.send_error(404)
 
@@ -320,6 +325,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "profit_per_win": profit_per_win,
             })
 
+        except Exception as e:
+            self.send_json({"success": False, "error": str(e)})
+
+    def handle_reset_recovery(self):
+        """Handle resetting the martingale recovery state."""
+        global GLOBAL_TRADER
+        try:
+            if GLOBAL_TRADER:
+                GLOBAL_TRADER.reset_recovery_mode()
+                DASHBOARD_STATE["consecutive_losses"] = 0
+                DASHBOARD_STATE["in_recovery"] = False
+                DASHBOARD_STATE["recovery_target"] = 0
+                DASHBOARD_STATE["recovery_stage"] = 0
+                log_activity("Recovery state reset manually")
+                self.send_json({"success": True, "message": "Recovery state reset"})
+            else:
+                self.send_json({"success": False, "error": "Trader not initialized"})
         except Exception as e:
             self.send_json({"success": False, "error": str(e)})
 
@@ -405,6 +427,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     <div id="recoveryBanner" style="display:none; background:rgba(255,107,107,0.15); border:1px solid #ff6b6b; border-radius:8px; padding:15px; margin-bottom:20px;">
         <strong style="color:#ff6b6b;">RECOVERY MODE ACTIVE</strong>
         <span id="recoveryInfo" style="margin-left:20px;">Stage 1 - Need to recover $0.00</span>
+        <button onclick="resetRecovery()" class="btn" style="background:#ff6b6b; color:#fff; margin-left:20px; padding:8px 15px; font-size:0.85rem;">Reset Recovery</button>
     </div>
 
     <div class="trades" style="margin-bottom:20px;">
@@ -484,6 +507,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         updateStatus();
                     }
                 });
+        }
+
+        function resetRecovery() {
+            if (!confirm('Reset recovery state? This clears consecutive losses and exits recovery mode.')) {
+                return;
+            }
+            fetch('/api/reset-recovery', {method: 'POST'})
+                .then(r => r.json())
+                .then(d => {
+                    if (d.success) {
+                        document.getElementById('recoveryBanner').style.display = 'none';
+                        updateStatus();
+                        alert('Recovery state reset successfully!');
+                    } else {
+                        alert('Error: ' + d.error);
+                    }
+                })
+                .catch(err => alert('Error: ' + err));
         }
 
         function updateStatus() {
@@ -789,7 +830,9 @@ def cmd_run():
     time.sleep(1)
 
     try:
+        global GLOBAL_TRADER
         trader = Trader()
+        GLOBAL_TRADER = trader
         DASHBOARD_STATE["bankroll"] = trader.state.bankroll
         DASHBOARD_STATE["status"] = "stopped"
         DASHBOARD_STATE["last_update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -911,6 +954,20 @@ def cmd_test():
         print(f"Connection failed: {e}")
 
 
+def cmd_reset_recovery():
+    """Reset martingale recovery state."""
+    print("Resetting martingale recovery state...")
+
+    try:
+        trader = Trader()
+        trader.reset_recovery_mode()
+        print("Recovery state reset successfully!")
+        print(f"Consecutive losses: {trader.tracker.martingale.consecutive_losses}")
+        print(f"In recovery: {trader.tracker.martingale.in_recovery}")
+    except Exception as e:
+        print(f"Error: {e}")
+
+
 def main():
     cmd = sys.argv[1].lower() if len(sys.argv) > 1 else "run"
 
@@ -918,9 +975,11 @@ def main():
         cmd_run()
     elif cmd == "test":
         cmd_test()
+    elif cmd == "reset-recovery":
+        cmd_reset_recovery()
     else:
         print(f"Unknown command: {cmd}")
-        print("Usage: python main.py [run|test]")
+        print("Usage: python main.py [run|test|reset-recovery]")
 
 
 if __name__ == "__main__":

@@ -213,7 +213,7 @@ class Trader:
         return (trade, tracked)
 
     def process_settlement(self, trade: TradeRecord, tracked: TrackedTrade):
-        """Process trade settlement using Kraken for instant determination."""
+        """Process trade settlement using Kalshi's official settlement API."""
         # Wait for market close time
         close_time = datetime.fromisoformat(tracked.close_time.replace("Z", "+00:00"))
         now = datetime.now(timezone.utc)
@@ -221,39 +221,55 @@ class Trader:
 
         if wait_seconds > 0:
             self.log(f"Waiting {wait_seconds:.0f}s for market close...")
-            time.sleep(wait_seconds + 2)  # Add 2 second buffer
+            time.sleep(wait_seconds + 5)  # Add 5 second buffer for settlement
 
-        # Get BTC price from Kraken for instant settlement
-        btc_price = KrakenClient.get_btc_price()
+        # Poll Kalshi for official settlement result
+        self.log("Waiting for Kalshi official settlement...")
+        result = None
+        for attempt in range(60):  # Try for up to 5 minutes (60 * 5s = 300s)
+            result = self.executor.check_settlement(tracked.ticker)
+            if result:
+                self.log(f"Kalshi settlement received: {result.upper()}")
+                break
+            if attempt % 6 == 0 and attempt > 0:  # Log every 30 seconds
+                self.log(f"Still waiting for settlement... ({attempt * 5}s)")
+            time.sleep(5)
 
-        if btc_price is None:
-            self.log("Could not get BTC price from Kraken, falling back to Kalshi", "WARN")
-            # Fallback to old method
-            trade = self.executor.wait_for_settlement(trade, timeout_seconds=600)
-            if trade.status == TradeStatus.SETTLED_WIN:
-                btc_price = tracked.floor_strike + 1  # Assume win
+        if not result:
+            # Fallback to Kraken if Kalshi settlement not available after 5 minutes
+            self.log("Kalshi settlement not found after 5 min, falling back to Kraken", "WARN")
+            btc_price = KrakenClient.get_btc_price()
+            if btc_price:
+                # For NO bets: win if BTC < strike
+                # For YES bets: win if BTC >= strike
+                if tracked.side == "no":
+                    result = "no" if btc_price < tracked.floor_strike else "yes"
+                else:
+                    result = "yes" if btc_price >= tracked.floor_strike else "no"
+                self.log(f"Kraken fallback: BTC ${btc_price:,.2f} -> result={result}")
             else:
-                btc_price = tracked.floor_strike - 1  # Assume loss
+                self.log("Cannot determine settlement!", "ERROR")
+                return
 
         # Get actual bankroll from Kalshi
         self.refresh_bankroll()
         bankroll_after_cents = int(self.state.bankroll * 100)
 
-        # Settle the tracked trade with exact calculations
-        self.tracker.settle_trade(tracked, btc_price, bankroll_after_cents)
+        # Settle using Kalshi's official result
+        self.tracker.settle_trade_with_result(tracked, result, bankroll_after_cents)
 
         # Log result with exact details
         slippage = tracked.actual_fill_price - tracked.intended_price
         if tracked.won:
             self.log(
-                f"WIN: {tracked.ticker} | BTC ${btc_price:,.2f} >= ${tracked.floor_strike:,.2f} | "
+                f"WIN: {tracked.ticker} | Kalshi result={result.upper()} (our side={tracked.side.upper()}) | "
                 f"+${tracked.net_profit_cents/100:.2f} (slippage: {slippage:+d}c)",
                 "WIN"
             )
             self.state.total_wins += 1
         else:
             self.log(
-                f"LOSS: {tracked.ticker} | BTC ${btc_price:,.2f} < ${tracked.floor_strike:,.2f} | "
+                f"LOSS: {tracked.ticker} | Kalshi result={result.upper()} (our side={tracked.side.upper()}) | "
                 f"${tracked.net_profit_cents/100:.2f} (slippage: {slippage:+d}c)",
                 "LOSS"
             )
@@ -419,6 +435,17 @@ class Trader:
 
         # Also print executor log for reference
         self.executor.print_trade_log()
+
+    def reset_recovery_mode(self):
+        """
+        Manually reset the martingale recovery state.
+        Use this when a trade was incorrectly recorded as a loss.
+        """
+        self.log("Resetting martingale recovery state...", "WARN")
+        self.tracker.martingale.reset()
+        self.tracker.save()
+        self._sync_martingale_from_tracker()
+        self.log("Recovery state reset. Next bet will be a fresh base bet.", "INFO")
 
     def show_status(self):
         """Print current status."""
