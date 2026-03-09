@@ -97,9 +97,18 @@ class Trader:
 
     def log(self, message: str, level: str = "INFO"):
         """Log a message with timestamp."""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        prefix = {"INFO": "[*]", "TRADE": "[$]", "WIN": "[+]", "LOSS": "[-]", "ERROR": "[!]", "WARN": "[?]"}
-        print(f"{timestamp} {prefix.get(level, '[*]')} {message}")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        prefix = {
+            "INFO": "[INFO ]",
+            "TRADE": "[TRADE]",
+            "WIN": "[WIN  ]",
+            "LOSS": "[LOSS ]",
+            "ERROR": "[ERROR]",
+            "WARN": "[WARN ]",
+            "DEBUG": "[DEBUG]",
+            "SETTLE": "[SETTL]",
+        }
+        print(f"{timestamp} {prefix.get(level, '[INFO ]')} {message}")
 
     def _sync_martingale_from_tracker(self):
         """Sync the MartingaleCalculator state from the TradeTracker's persisted state."""
@@ -112,9 +121,15 @@ class Trader:
         self.state.consecutive_losses = tracker_state.consecutive_losses
         if tracker_state.in_recovery:
             self.log(
-                f"Loaded recovery state: {tracker_state.consecutive_losses} losses, "
-                f"recovering ${tracker_state.total_loss_cents/100:.2f} + "
-                f"${tracker_state.base_target_profit_cents/100:.2f} target",
+                f"RECOVERY MODE ACTIVE: {tracker_state.consecutive_losses} consecutive losses",
+                "WARN"
+            )
+            self.log(
+                f"  Total loss to recover: ${tracker_state.total_loss_cents/100:.2f}",
+                "WARN"
+            )
+            self.log(
+                f"  Next bet will be recovery #{tracker_state.consecutive_losses + 1}",
                 "WARN"
             )
 
@@ -170,32 +185,43 @@ class Trader:
 
     def execute_trade(self, opportunity: TradingOpportunity, bet: MartingaleBet) -> Optional[tuple]:
         """Execute a single trade. Returns (TradeRecord, TrackedTrade) tuple."""
-        self.log(
-            f"EXECUTING: {opportunity.side.upper()} {opportunity.ticker} @ {opportunity.entry_price}c | "
-            f"{bet.contracts} contracts | ${bet.cost_dollars:.2f}",
-            "TRADE"
-        )
+        self.log("=" * 60, "TRADE")
+        self.log(f"EXECUTING TRADE #{bet.bet_number}", "TRADE")
+        self.log(f"  Ticker: {opportunity.ticker}", "TRADE")
+        self.log(f"  Side: {opportunity.side.upper()}", "TRADE")
+        self.log(f"  Entry price: {opportunity.entry_price}c", "TRADE")
+        self.log(f"  Contracts: {bet.contracts}", "TRADE")
+        self.log(f"  Cost: ${bet.cost_dollars:.2f}", "TRADE")
+        self.log(f"  Strike: ${opportunity.floor_strike:,.2f}", "TRADE")
+        self.log(f"  Close time: {opportunity.close_time.isoformat()}", "TRADE")
+        if bet.bet_number > 1:
+            self.log(f"  RECOVERY BET: Recovering ${self.martingale.state.total_loss_dollars:.2f} in losses", "WARN")
 
         result = self.executor.execute_opportunity(opportunity, bet)
 
         if not result.success:
-            self.log(f"Order failed: {result.error}", "ERROR")
+            self.log(f"ORDER FAILED: {result.error}", "ERROR")
             return None
 
         trade = result.trade
+        self.log(f"Order submitted: {trade.order_id}", "DEBUG")
 
         # Wait for fill
-        self.log(f"Waiting for fill (order {trade.order_id})...")
+        self.log(f"Waiting for fill (timeout: 30s)...", "DEBUG")
         trade = self.executor.wait_for_fill(trade.order_id, timeout_seconds=30)
 
         if trade.status == TradeStatus.UNFILLED:
-            self.log(f"Order not filled - canceled", "WARN")
+            self.log(f"ORDER NOT FILLED - canceled after timeout", "WARN")
             return None
 
         if trade.filled_contracts < bet.contracts:
-            self.log(f"Partial fill: {trade.filled_contracts}/{bet.contracts}", "WARN")
+            self.log(f"PARTIAL FILL: {trade.filled_contracts}/{bet.contracts} contracts", "WARN")
 
-        self.log(f"Filled @ {trade.actual_fill_price}c | Waiting for settlement...")
+        slippage = trade.actual_fill_price - opportunity.entry_price
+        self.log(f"ORDER FILLED:", "TRADE")
+        self.log(f"  Fill price: {trade.actual_fill_price}c (slippage: {slippage:+d}c)", "TRADE")
+        self.log(f"  Contracts filled: {trade.filled_contracts}", "TRADE")
+        self.log(f"  Actual cost: ${trade.filled_contracts * trade.actual_fill_price / 100:.2f}", "TRADE")
 
         # Create tracked trade record with exact details
         bankroll_cents = int(self.state.bankroll * 100)
@@ -210,69 +236,101 @@ class Trader:
             bankroll_cents=bankroll_cents,
         )
 
+        self.log(f"Trade recorded: {tracked.trade_id}", "DEBUG")
+        self.log(f"  Fee calculated: ${tracked.fee_cents/100:.2f}", "DEBUG")
+        self.log(f"  Bet #{tracked.bet_number} | Recovering: ${tracked.recovering_amount_cents/100:.2f}", "DEBUG")
+        self.log("Waiting for settlement...", "TRADE")
+
         return (trade, tracked)
 
     def process_settlement(self, trade: TradeRecord, tracked: TrackedTrade):
         """Process trade settlement using Kalshi's official settlement API."""
+        self.log("=" * 60, "SETTLE")
+        self.log(f"SETTLEMENT PROCESS STARTED for {tracked.ticker}", "SETTLE")
+        self.log(f"  Our side: {tracked.side.upper()}", "SETTLE")
+        self.log(f"  Strike: ${tracked.floor_strike:,.2f}", "SETTLE")
+        self.log(f"  Contracts: {tracked.contracts} @ {tracked.actual_fill_price}c", "SETTLE")
+        self.log(f"  Cost: ${tracked.cost_cents/100:.2f} + ${tracked.fee_cents/100:.2f} fee", "SETTLE")
+
         # Wait for market close time
         close_time = datetime.fromisoformat(tracked.close_time.replace("Z", "+00:00"))
         now = datetime.now(timezone.utc)
         wait_seconds = (close_time - now).total_seconds()
 
         if wait_seconds > 0:
-            self.log(f"Waiting {wait_seconds:.0f}s for market close...")
+            self.log(f"Waiting {wait_seconds:.0f}s for market close...", "SETTLE")
             time.sleep(wait_seconds + 5)  # Add 5 second buffer for settlement
 
         # Poll Kalshi for official settlement result
-        self.log("Waiting for Kalshi official settlement...")
+        self.log("Polling Kalshi API for official settlement...", "SETTLE")
         result = None
+        settlement_source = "kalshi"
         for attempt in range(60):  # Try for up to 5 minutes (60 * 5s = 300s)
             result = self.executor.check_settlement(tracked.ticker)
             if result:
-                self.log(f"Kalshi settlement received: {result.upper()}")
+                self.log(f"KALSHI OFFICIAL SETTLEMENT: {result.upper()}", "SETTLE")
                 break
             if attempt % 6 == 0 and attempt > 0:  # Log every 30 seconds
-                self.log(f"Still waiting for settlement... ({attempt * 5}s)")
+                self.log(f"Still waiting for Kalshi settlement... ({attempt * 5}s elapsed)", "SETTLE")
             time.sleep(5)
 
         if not result:
             # Fallback to Kraken if Kalshi settlement not available after 5 minutes
-            self.log("Kalshi settlement not found after 5 min, falling back to Kraken", "WARN")
+            self.log("KALSHI TIMEOUT: No settlement after 5 min, using Kraken fallback", "WARN")
+            settlement_source = "kraken_fallback"
             btc_price = KrakenClient.get_btc_price()
             if btc_price:
+                self.log(f"Kraken BTC price: ${btc_price:,.2f}", "SETTLE")
+                self.log(f"Strike price: ${tracked.floor_strike:,.2f}", "SETTLE")
                 # For NO bets: win if BTC < strike
                 # For YES bets: win if BTC >= strike
                 if tracked.side == "no":
                     result = "no" if btc_price < tracked.floor_strike else "yes"
+                    self.log(f"NO bet: BTC ${btc_price:,.2f} {'<' if btc_price < tracked.floor_strike else '>='} strike ${tracked.floor_strike:,.2f} -> result={result.upper()}", "SETTLE")
                 else:
                     result = "yes" if btc_price >= tracked.floor_strike else "no"
-                self.log(f"Kraken fallback: BTC ${btc_price:,.2f} -> result={result}")
+                    self.log(f"YES bet: BTC ${btc_price:,.2f} {'>=' if btc_price >= tracked.floor_strike else '<'} strike ${tracked.floor_strike:,.2f} -> result={result.upper()}", "SETTLE")
             else:
-                self.log("Cannot determine settlement!", "ERROR")
+                self.log("CRITICAL: Cannot get BTC price from Kraken!", "ERROR")
+                self.log("Cannot determine settlement - trade left unsettled", "ERROR")
                 return
 
+        # Determine win/loss
+        we_won = (tracked.side == result)
+        self.log(f"RESULT: Market settled {result.upper()}, we bet {tracked.side.upper()} -> {'WIN' if we_won else 'LOSS'}", "SETTLE")
+        self.log(f"Settlement source: {settlement_source.upper()}", "SETTLE")
+
         # Get actual bankroll from Kalshi
+        old_bankroll = self.state.bankroll
         self.refresh_bankroll()
         bankroll_after_cents = int(self.state.bankroll * 100)
+        self.log(f"Bankroll change: ${old_bankroll:.2f} -> ${self.state.bankroll:.2f} (delta: ${self.state.bankroll - old_bankroll:+.2f})", "SETTLE")
 
         # Settle using Kalshi's official result
+        self.log("Recording settlement in trade tracker...", "SETTLE")
         self.tracker.settle_trade_with_result(tracked, result, bankroll_after_cents)
 
         # Log result with exact details
         slippage = tracked.actual_fill_price - tracked.intended_price
         if tracked.won:
-            self.log(
-                f"WIN: {tracked.ticker} | Kalshi result={result.upper()} (our side={tracked.side.upper()}) | "
-                f"+${tracked.net_profit_cents/100:.2f} (slippage: {slippage:+d}c)",
-                "WIN"
-            )
+            self.log("=" * 60, "WIN")
+            self.log(f"TRADE WON: {tracked.ticker}", "WIN")
+            self.log(f"  Market result: {result.upper()} | Our side: {tracked.side.upper()}", "WIN")
+            self.log(f"  Gross payout: ${tracked.gross_payout_cents/100:.2f} ({tracked.contracts} contracts x $1)", "WIN")
+            self.log(f"  Cost: ${tracked.cost_cents/100:.2f} | Fee: ${tracked.fee_cents/100:.2f}", "WIN")
+            self.log(f"  Net profit: ${tracked.net_profit_cents/100:+.2f}", "WIN")
+            self.log(f"  Slippage: {slippage:+d}c ({tracked.intended_price}c -> {tracked.actual_fill_price}c)", "WIN")
+            if tracked.bet_number > 1:
+                self.log(f"  Recovery bet #{tracked.bet_number}: Successfully recovered ${tracked.recovering_amount_cents/100:.2f}", "WIN")
             self.state.total_wins += 1
         else:
-            self.log(
-                f"LOSS: {tracked.ticker} | Kalshi result={result.upper()} (our side={tracked.side.upper()}) | "
-                f"${tracked.net_profit_cents/100:.2f} (slippage: {slippage:+d}c)",
-                "LOSS"
-            )
+            self.log("=" * 60, "LOSS")
+            self.log(f"TRADE LOST: {tracked.ticker}", "LOSS")
+            self.log(f"  Market result: {result.upper()} | Our side: {tracked.side.upper()}", "LOSS")
+            self.log(f"  Gross payout: $0.00 (lost)", "LOSS")
+            self.log(f"  Cost lost: ${tracked.cost_cents/100:.2f} | Fee lost: ${tracked.fee_cents/100:.2f}", "LOSS")
+            self.log(f"  Net loss: ${tracked.net_profit_cents/100:.2f}", "LOSS")
+            self.log(f"  Slippage: {slippage:+d}c ({tracked.intended_price}c -> {tracked.actual_fill_price}c)", "LOSS")
             self.state.total_losses += 1
 
         self.state.total_profit += tracked.net_profit_cents / 100
@@ -280,10 +338,23 @@ class Trader:
         self.state.last_trade_time = datetime.now(timezone.utc).isoformat()
 
         # Sync martingale state from tracker (it's the source of truth)
+        old_recovery_state = self.martingale.state.in_recovery
+        old_consecutive_losses = self.martingale.state.consecutive_losses
         self._sync_martingale_from_tracker()
+
+        # Log martingale state change
+        self.log("MARTINGALE STATE UPDATE:", "DEBUG")
+        self.log(f"  Consecutive losses: {old_consecutive_losses} -> {self.martingale.state.consecutive_losses}", "DEBUG")
+        self.log(f"  In recovery: {old_recovery_state} -> {self.martingale.state.in_recovery}", "DEBUG")
+        if self.martingale.state.in_recovery:
+            self.log(f"  Total loss to recover: ${self.martingale.state.total_loss_dollars:.2f}", "DEBUG")
+            self.log(f"  Next bet will be RECOVERY bet #{self.martingale.state.consecutive_losses + 1}", "WARN")
+        else:
+            self.log(f"  Next bet will be fresh BASE bet", "DEBUG")
 
         # Print detailed trade summary
         self.tracker.print_trade_summary(tracked)
+        self.log("=" * 60, "SETTLE")
 
         self.state.save(self.state_path)
 
@@ -386,9 +457,23 @@ class Trader:
         """
         self.log("=" * 60)
         self.log("STARTING 15-MINUTE STRATEGY TRADER")
-        self.log(f"Bankroll: ${self.state.bankroll:.2f}")
-        self.log(f"Target per trade: ${self.config.target_profit_per_trade:.2f}")
-        self.log(f"Entry range: {self.config.trading.min_entry_price}-{self.config.trading.max_entry_price}c")
+        self.log("=" * 60)
+        self.log("CONFIGURATION:")
+        self.log(f"  Real Bankroll: ${self.state.bankroll:.2f}")
+        self.log(f"  Effective Bankroll: ${self.effective_bankroll:.2f}")
+        self.log(f"  Target per trade: ${self.config.target_profit_per_trade:.2f}")
+        self.log(f"  Entry range: {self.config.trading.min_entry_price}-{self.config.trading.max_entry_price}c")
+        self.log(f"  Recovery price cap: {self.config.trading.recovery_price_cap}c")
+        self.log(f"  Max consecutive losses: {self.config.trading.max_consecutive_losses}")
+        self.log("MARTINGALE STATE:")
+        self.log(f"  In recovery: {self.martingale.state.in_recovery}")
+        self.log(f"  Consecutive losses: {self.martingale.state.consecutive_losses}")
+        if self.martingale.state.in_recovery:
+            self.log(f"  Loss to recover: ${self.martingale.state.total_loss_dollars:.2f}")
+        self.log(f"SESSION STATS:")
+        self.log(f"  Total trades: {self.state.total_trades}")
+        self.log(f"  Wins/Losses: {self.state.total_wins}/{self.state.total_losses}")
+        self.log(f"  Total P&L: ${self.state.total_profit:+.2f}")
         self.log("=" * 60)
 
         try:

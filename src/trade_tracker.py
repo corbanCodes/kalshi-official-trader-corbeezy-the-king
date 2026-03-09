@@ -124,15 +124,36 @@ class MartingaleState:
 
     def record_loss(self, loss_cents: int, base_profit_cents: int = 0):
         """Record a loss."""
+        from datetime import datetime, timezone
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"{timestamp} [MART ] RECORD_LOSS called:")
+        print(f"{timestamp} [MART ]   Loss amount: ${loss_cents/100:.2f}")
+        print(f"{timestamp} [MART ]   Base profit (if first loss): ${base_profit_cents/100:.2f}")
+
         self.consecutive_losses += 1
         self.total_loss_cents += abs(loss_cents)
         if not self.in_recovery:
             self.base_target_profit_cents = base_profit_cents
+            print(f"{timestamp} [MART ]   Entering recovery mode (first loss in sequence)")
         self.in_recovery = True
+
+        print(f"{timestamp} [MART ]   New state: {self.consecutive_losses} losses, ${self.total_loss_cents/100:.2f} to recover")
 
     def record_win(self):
         """Record a win and reset."""
+        from datetime import datetime, timezone
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        was_in_recovery = self.in_recovery
+        recovered_amount = self.total_loss_cents
+
+        print(f"{timestamp} [MART ] RECORD_WIN called:")
+        if was_in_recovery:
+            print(f"{timestamp} [MART ]   Was in recovery: {self.consecutive_losses} losses, recovered ${recovered_amount/100:.2f}")
+        else:
+            print(f"{timestamp} [MART ]   Normal win (not in recovery)")
+
         self.reset()
+        print(f"{timestamp} [MART ]   Martingale state RESET - ready for fresh base bet")
 
     def get_recovery_target_cents(self) -> int:
         """
@@ -278,25 +299,46 @@ class TradeTracker:
             result: "yes" or "no" from Kalshi's settlement API
             bankroll_after_cents: Actual bankroll after settlement
         """
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"{timestamp} [TRACK] CATALOGING TRADE RESULT")
+        print(f"{timestamp} [TRACK]   Trade ID: {trade.trade_id}")
+        print(f"{timestamp} [TRACK]   Market result: {result.upper()}")
+        print(f"{timestamp} [TRACK]   Our side: {trade.side.upper()}")
+
         # Calculate settlement using official result
         trade.settle_with_result(result)
         trade.bankroll_after_cents = bankroll_after_cents
 
+        print(f"{timestamp} [TRACK]   Won: {trade.won}")
+        print(f"{timestamp} [TRACK]   Gross payout: ${trade.gross_payout_cents/100:.2f}")
+        print(f"{timestamp} [TRACK]   Net P&L: ${trade.net_profit_cents/100:+.2f}")
+
         # Update martingale state
+        print(f"{timestamp} [TRACK] UPDATING MARTINGALE STATE")
+        print(f"{timestamp} [TRACK]   Before: losses={self.martingale.consecutive_losses}, in_recovery={self.martingale.in_recovery}, total_loss=${self.martingale.total_loss_cents/100:.2f}")
+
         if trade.won:
             self.martingale.record_win()
+            print(f"{timestamp} [TRACK]   Action: RECORD_WIN -> Reset martingale state")
         else:
             # Calculate what we WOULD have profited if we won (for TRUE martingale recovery)
             would_have_won_gross = trade.contracts * 100
             would_have_profited = would_have_won_gross - trade.cost_cents - trade.fee_cents
             base_profit = would_have_profited if trade.bet_number == 1 else 0
 
+            loss_amount = trade.cost_cents + trade.fee_cents
+            print(f"{timestamp} [TRACK]   Action: RECORD_LOSS")
+            print(f"{timestamp} [TRACK]   Loss amount: ${loss_amount/100:.2f} (cost ${trade.cost_cents/100:.2f} + fee ${trade.fee_cents/100:.2f})")
+
             self.martingale.record_loss(
-                loss_cents=trade.cost_cents + trade.fee_cents,
+                loss_cents=loss_amount,
                 base_profit_cents=base_profit
             )
 
+        print(f"{timestamp} [TRACK]   After: losses={self.martingale.consecutive_losses}, in_recovery={self.martingale.in_recovery}, total_loss=${self.martingale.total_loss_cents/100:.2f}")
+
         self.save()
+        print(f"{timestamp} [TRACK] Trade cataloged and saved to disk")
 
     def settle_trade_with_kraken(self, trade: TradeRecord, bankroll_after_cents: int) -> bool:
         """

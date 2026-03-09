@@ -214,13 +214,28 @@ class MartingaleCalculator:
         """
         Calculate base bet - uses consistent contract count that survives 2 losses at ANY price 80-90c.
         """
+        from datetime import datetime, timezone
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        print(f"{timestamp} [CALC ] CALCULATING BASE BET #1")
+        print(f"{timestamp} [CALC ]   Bankroll: ${bankroll:.2f}")
+        print(f"{timestamp} [CALC ]   Entry price: {entry_price_cents}c")
+
         # Find max safe contracts across entire range
         contracts = self.find_max_safe_contracts(bankroll, min_price=80, max_price=90)
 
         price_dollars = entry_price_cents / 100
         cost = contracts * price_dollars
         net_profit_per_contract = MarketScanner.calc_net_profit(entry_price_cents)
+        fee_per_contract = MarketScanner.calc_fee(entry_price_cents)
         profit_if_win = contracts * net_profit_per_contract
+
+        print(f"{timestamp} [CALC ]   BASE BET CALCULATED:")
+        print(f"{timestamp} [CALC ]     Max safe contracts: {contracts}")
+        print(f"{timestamp} [CALC ]     Cost: ${cost:.2f}")
+        print(f"{timestamp} [CALC ]     Fee (est): ${fee_per_contract * contracts:.2f}")
+        print(f"{timestamp} [CALC ]     Net profit if win: ${profit_if_win:.2f}")
+        print(f"{timestamp} [CALC ]     Bet as % of bankroll: {(cost / bankroll * 100):.1f}%")
 
         return MartingaleBet(
             bet_number=1,
@@ -247,18 +262,31 @@ class MartingaleCalculator:
 
         Formula: contracts_needed = (total_loss + estimated_fee) / net_profit_per_contract
         """
+        from datetime import datetime, timezone
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        print(f"{timestamp} [CALC ] CALCULATING RECOVERY BET #{self.current_bet_number}")
+        print(f"{timestamp} [CALC ]   Entry price: {entry_price_cents}c")
+        print(f"{timestamp} [CALC ]   Total loss to recover: ${self.state.total_loss_dollars:.2f}")
+
         # Enforce recovery price cap (85c max)
         if entry_price_cents > self.RECOVERY_PRICE_CAP:
+            print(f"{timestamp} [CALC ]   REJECTED: Price {entry_price_cents}c > cap {self.RECOVERY_PRICE_CAP}c")
             return None  # Don't take recovery bets above 85c
 
         # Assume worst-case fill price (slippage)
         fill_price_cents = min(entry_price_cents + slippage_cents, 99)
         fill_price_dollars = fill_price_cents / 100
+        print(f"{timestamp} [CALC ]   Assumed fill price: {fill_price_cents}c (with {slippage_cents}c slippage)")
 
         # Calculate net profit per contract AFTER fees at fill price
         net_profit_per_contract = MarketScanner.calc_net_profit(fill_price_cents)
+        fee_per_contract = MarketScanner.calc_fee(fill_price_cents)
+        print(f"{timestamp} [CALC ]   Net profit per contract: ${net_profit_per_contract:.4f}")
+        print(f"{timestamp} [CALC ]   Fee per contract: ${fee_per_contract:.4f}")
 
         if net_profit_per_contract <= 0:
+            print(f"{timestamp} [CALC ]   REJECTED: Net profit <= 0 at {fill_price_cents}c")
             return None  # Can't recover at this price
 
         # LOSS-ONLY RECOVERY with slippage/fee buffer
@@ -266,6 +294,7 @@ class MartingaleCalculator:
         # But we also need to account for the fee on THIS bet
         # Iterate to find exact contracts needed
 
+        print(f"{timestamp} [CALC ]   Iterating to find exact contracts needed...")
         for contracts in range(1, 10000):
             # Calculate what we'd actually net if we win
             cost = contracts * fill_price_dollars
@@ -283,6 +312,21 @@ class MartingaleCalculator:
         cost = contracts * (entry_price_cents / 100)
         total_risk = self.state.total_loss_dollars + cost
         profit_if_win = contracts * net_profit_per_contract
+
+        # Log the final calculation
+        actual_cost = contracts * fill_price_dollars
+        actual_fee = MarketScanner.calc_fee(fill_price_cents) * contracts
+        actual_net = (contracts * 1.0) - actual_cost - actual_fee
+        buffer = actual_net - self.state.total_loss_dollars
+
+        print(f"{timestamp} [CALC ]   RECOVERY BET CALCULATED:")
+        print(f"{timestamp} [CALC ]     Contracts: {contracts}")
+        print(f"{timestamp} [CALC ]     Cost at fill: ${actual_cost:.2f}")
+        print(f"{timestamp} [CALC ]     Fee: ${actual_fee:.2f}")
+        print(f"{timestamp} [CALC ]     Gross payout if win: ${contracts * 1.0:.2f}")
+        print(f"{timestamp} [CALC ]     Net profit if win: ${actual_net:.2f}")
+        print(f"{timestamp} [CALC ]     Recovery target: ${self.state.total_loss_dollars:.2f}")
+        print(f"{timestamp} [CALC ]     Buffer (net - target): ${buffer:+.2f}")
 
         return MartingaleBet(
             bet_number=self.current_bet_number,
