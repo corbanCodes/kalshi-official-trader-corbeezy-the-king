@@ -940,7 +940,14 @@ def cmd_run():
                         "time": last_trade.timestamp,
                     }
                     # Log pending state for Railway visibility
-                    print(f"[PENDING] {last_trade.side.upper()} {last_trade.contracts}x @ {last_trade.actual_fill_price}c - waiting for settlement...")
+                    print("=" * 60)
+                    print(f"[TRADE PENDING] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                    print(f"  Ticker: {last_trade.ticker}")
+                    print(f"  Side: {last_trade.side.upper()}")
+                    print(f"  Contracts: {last_trade.contracts} @ {last_trade.actual_fill_price}c")
+                    print(f"  Cost: ${last_trade.cost_cents/100:.2f}")
+                    print(f"  Waiting for market settlement...")
+                    print("=" * 60)
                 else:
                     DASHBOARD_STATE["pending_trade"] = None
 

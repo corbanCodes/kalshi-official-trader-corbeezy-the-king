@@ -262,16 +262,19 @@ class Trader:
         wait_seconds = (close_time - now).total_seconds()
 
         if wait_seconds > 0:
+            print(f"[WAITING] {wait_seconds:.0f}s until market closes...")
             self.log(f"Waiting {wait_seconds:.0f}s for market close...", "SETTLE")
             time.sleep(wait_seconds + 5)  # Add 5 second buffer for settlement
 
         # Poll Kalshi for official settlement result
+        print("[SETTLEMENT] Polling Kalshi API for official result...")
         self.log("Polling Kalshi API for official settlement...", "SETTLE")
         result = None
         settlement_source = "kalshi"
         for attempt in range(60):  # Try for up to 5 minutes (60 * 5s = 300s)
             result = self.executor.check_settlement(tracked.ticker)
             if result:
+                print(f"[SETTLEMENT] Kalshi says: {result.upper()}")
                 self.log(f"KALSHI OFFICIAL SETTLEMENT: {result.upper()}", "SETTLE")
                 break
             if attempt % 6 == 0 and attempt > 0:  # Log every 30 seconds
@@ -427,7 +430,15 @@ class Trader:
 
             self.log(f"RECOVERY MODE: {reason} | BTC ${btc_price:,.2f}", "INFO")
 
-        self.log(f"Found: {opportunity}")
+        # === OPPORTUNITY FOUND - LOG PROMINENTLY ===
+        print("=" * 60)
+        print(f"[OPPORTUNITY FOUND] {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+        print(f"  Ticker: {opportunity.ticker}")
+        print(f"  Side: {opportunity.side.upper()}")
+        print(f"  Entry Price: {opportunity.entry_price}c")
+        print(f"  Strike: ${opportunity.floor_strike:,.2f}")
+        print(f"  Close Time: {opportunity.close_time}")
+        print("=" * 60)
 
         # Calculate bet
         bet = self.calculate_bet(opportunity)
@@ -441,6 +452,10 @@ class Trader:
                 f"${self.martingale.state.base_target_profit_dollars:.2f} target",
                 "WARN"
             )
+
+        # === PLACING ORDER ===
+        print(f"[PLACING ORDER] {bet.contracts} contracts @ {opportunity.entry_price}c limit")
+        print(f"  Estimated cost: ${bet.cost_dollars:.2f}")
 
         # Execute
         result = self.execute_trade(opportunity, bet)
