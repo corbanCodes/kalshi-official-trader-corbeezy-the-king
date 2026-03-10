@@ -347,30 +347,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"success": False, "error": "Invalid bankroll amount"})
                 return
 
-            # Calculate using loss-only formula at 85c
-            price = 0.85
-            profit_per_dollar = 0.15
+            # Calculate using net profit formula at 88c (87c cap + 1c slippage)
+            # Matches actual martingale.py recovery math
+            fill_price = 0.88
+            fee = 0.01  # Kalshi fee at 88c
+            net_profit = (1.0 - fill_price) - fee  # $0.11
 
             safe_contracts = 0
             max_risk = 0
 
             for contracts in range(100, 0, -1):
-                base_cost = contracts * price
-                cum = base_cost
+                # Base bet
+                base_cost = contracts * fill_price
+                base_fee = contracts * fee
+                cum = base_cost + base_fee
 
-                r1 = math.ceil(cum / profit_per_dollar)
-                cum += r1 * price
+                # R1: loss * 1.10 / net_profit
+                r1_target = cum * 1.10
+                r1 = math.ceil(r1_target / net_profit)
+                r1_cost = r1 * fill_price
+                r1_fee = r1 * fee
+                cum += r1_cost + r1_fee
 
-                r2 = math.ceil(cum / profit_per_dollar)
-                cum += r2 * price
+                # R2: loss * 1.10 / net_profit
+                r2_target = cum * 1.10
+                r2 = math.ceil(r2_target / net_profit)
+                r2_cost = r2 * fill_price
 
-                if cum <= effective_bankroll:
+                total_cost = base_cost + r1_cost + r2_cost
+
+                if total_cost <= effective_bankroll:
                     safe_contracts = contracts
-                    max_risk = cum
+                    max_risk = total_cost
                     break
 
-            # Profit per win (rough estimate with fees)
-            profit_per_win = safe_contracts * 0.15 * 0.93  # ~7% fee reduction
+            # Profit per win (net profit after fees)
+            profit_per_win = safe_contracts * net_profit
 
             self.send_json({
                 "success": True,
@@ -808,24 +820,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
         }
 
         function calculateSafety(bankroll) {
-            // Quick client-side calculation for display
-            const price = 0.85;
-            const profitPerDollar = 0.15;
+            // Matches martingale.py: 88c fill, net profit, 10% buffer
+            const fillPrice = 0.88;
+            const fee = 0.01;
+            const netProfit = (1.0 - fillPrice) - fee;  // $0.11
 
             for (let contracts = 100; contracts > 0; contracts--) {
-                const baseCost = contracts * price;
-                let cum = baseCost;
+                const baseCost = contracts * fillPrice;
+                const baseFee = contracts * fee;
+                let cum = baseCost + baseFee;
 
-                const r1 = Math.ceil(cum / profitPerDollar);
-                cum += r1 * price;
+                const r1Target = cum * 1.10;
+                const r1 = Math.ceil(r1Target / netProfit);
+                const r1Cost = r1 * fillPrice;
+                const r1Fee = r1 * fee;
+                cum += r1Cost + r1Fee;
 
-                const r2 = Math.ceil(cum / profitPerDollar);
-                cum += r2 * price;
+                const r2Target = cum * 1.10;
+                const r2 = Math.ceil(r2Target / netProfit);
+                const r2Cost = r2 * fillPrice;
 
-                if (cum <= bankroll) {
+                const totalCost = baseCost + r1Cost + r2Cost;
+
+                if (totalCost <= bankroll) {
                     document.getElementById('safeContracts').textContent = contracts;
-                    document.getElementById('maxRisk').textContent = '$' + cum.toFixed(2);
-                    document.getElementById('profitPerWin').textContent = '$' + (contracts * 0.15 * 0.93).toFixed(2);
+                    document.getElementById('maxRisk').textContent = '$' + totalCost.toFixed(2);
+                    document.getElementById('profitPerWin').textContent = '$' + (contracts * netProfit).toFixed(2);
                     break;
                 }
             }
