@@ -115,6 +115,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_json(DASHBOARD_STATE)
         elif self.path == "/api/logs":
             self.send_logs_download()
+        elif self.path == "/api/export":
+            self.send_csv_export()
         elif self.path == "/strategy":
             self.send_strategy_explanation()
         else:
@@ -160,6 +162,60 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Disposition", f"attachment; filename=trading_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
         self.end_headers()
         self.wfile.write(json.dumps(all_logs, indent=2).encode())
+
+    def send_csv_export(self):
+        """Export trade history as CSV with all details."""
+        import csv
+        import io
+
+        logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        trade_history_file = os.path.join(logs_dir, "trade_history.json")
+
+        trades = []
+        if os.path.exists(trade_history_file):
+            try:
+                with open(trade_history_file) as f:
+                    trades = json.load(f)
+            except:
+                pass
+
+        # Create CSV in memory
+        output = io.StringIO()
+        fieldnames = [
+            "timestamp", "ticker", "side", "contracts",
+            "intended_price", "fill_price", "slippage",
+            "cost", "fee", "won", "net_profit",
+            "bet_number", "floor_strike", "settlement_btc"
+        ]
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for t in trades:
+            slippage = t.get("actual_fill_price", 0) - t.get("intended_price", 0)
+            writer.writerow({
+                "timestamp": t.get("timestamp", ""),
+                "ticker": t.get("ticker", ""),
+                "side": t.get("side", ""),
+                "contracts": t.get("contracts", 0),
+                "intended_price": t.get("intended_price", 0),
+                "fill_price": t.get("actual_fill_price", 0),
+                "slippage": slippage,
+                "cost": t.get("cost_cents", 0) / 100,
+                "fee": t.get("fee_cents", 0) / 100,
+                "won": "WIN" if t.get("won") else "LOSS" if t.get("won") is False else "PENDING",
+                "net_profit": t.get("net_profit_cents", 0) / 100,
+                "bet_number": t.get("bet_number", 1),
+                "floor_strike": t.get("floor_strike", 0),
+                "settlement_btc": t.get("settlement_btc_price", 0),
+            })
+
+        csv_content = output.getvalue()
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv")
+        self.send_header("Content-Disposition", f"attachment; filename=trade_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+        self.end_headers()
+        self.wfile.write(csv_content.encode())
 
     def send_strategy_explanation(self):
         """Send strategy explanation page."""
@@ -402,7 +458,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         <button class="btn btn-start" id="startBtn" onclick="startTrading()">START TRADING</button>
         <button class="btn btn-stop" id="stopBtn" onclick="stopTrading()" disabled>STOP</button>
         <span class="status stopped" id="statusBadge">STOPPED</span>
-        <a href="/api/logs" class="btn" style="background:#444;color:#fff;text-decoration:none;margin-left:20px;">Download Logs</a>
+        <a href="/api/logs" class="btn" style="background:#444;color:#fff;text-decoration:none;margin-left:20px;">Download JSON</a>
+        <a href="/api/export" class="btn" style="background:#2196F3;color:#fff;text-decoration:none;margin-left:10px;">Export CSV</a>
         <a href="/strategy" class="btn" style="background:#333;color:#6bcb77;text-decoration:none;border:1px solid #6bcb77;" target="_blank">Strategy Info</a>
     </div>
 

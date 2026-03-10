@@ -50,8 +50,8 @@ class MartingaleCalculator:
     - Bet 3: Recovery Stage 2 (if bet 2 loses) - THE REAL BET
     """
 
-    # Recovery entries capped at 85c (more conservative than 80-92c base range)
-    RECOVERY_PRICE_CAP = 85
+    # Recovery entries capped at 87c (allows more opportunities while staying conservative)
+    RECOVERY_PRICE_CAP = 87
 
     def __init__(self, max_consecutive_losses: int = 2):
         self.max_consecutive_losses = max_consecutive_losses
@@ -173,35 +173,37 @@ class MartingaleCalculator:
 
     def _calc_total_risk_for_contracts(self, base_contracts: int, price_cents: int) -> float:
         """
-        Calculate total risk for a given base contract count using loss-only recovery.
+        Calculate total risk for a given base contract count.
 
-        INCLUDES FEES AND SLIPPAGE BUFFER in recovery calculations.
-
+        Uses NET profit (accounts for Kalshi fees) with 5% buffer.
         3 bets total: Base + Recovery 1 + Recovery 2
         """
         # Assume 1c slippage on all bets
         fill_price_cents = min(price_cents + 1, 99)
         fill_price_dollars = fill_price_cents / 100
 
-        # Calculate net profit per contract after fees
-        net_profit_per = MarketScanner.calc_net_profit(fill_price_cents)
+        # Net profit = gross - fee (Kalshi fee formula)
+        fee_per = MarketScanner.calc_fee(fill_price_cents)
+        net_profit_per = (1.0 - fill_price_dollars) - fee_per
 
         if net_profit_per <= 0:
-            return float('inf')  # Can't recover at 99-100c
+            return float('inf')  # Can't recover at this price
 
         # Base bet (Bet 1) - include fee in loss
         base_cost = base_contracts * fill_price_dollars
-        base_fee = MarketScanner.calc_fee(fill_price_cents) * base_contracts
+        base_fee = fee_per * base_contracts
         cumulative_loss = base_cost + base_fee
 
-        # Recovery 1 (Bet 2): Need contracts where net_profit >= cumulative_loss
-        r1_contracts = math.ceil(cumulative_loss / net_profit_per)
+        # Recovery 1 (Bet 2): contracts = loss * 1.10 / net_profit
+        r1_target = cumulative_loss * 1.10
+        r1_contracts = math.ceil(r1_target / net_profit_per)
         r1_cost = r1_contracts * fill_price_dollars
-        r1_fee = MarketScanner.calc_fee(fill_price_cents) * r1_contracts
+        r1_fee = fee_per * r1_contracts
         cumulative_loss += r1_cost + r1_fee
 
-        # Recovery 2 (Bet 3): Need contracts where net_profit >= cumulative_loss
-        r2_contracts = math.ceil(cumulative_loss / net_profit_per)
+        # Recovery 2 (Bet 3): contracts = loss * 1.10 / net_profit
+        r2_target = cumulative_loss * 1.10
+        r2_contracts = math.ceil(r2_target / net_profit_per)
         r2_cost = r2_contracts * fill_price_dollars
 
         return base_cost + r1_cost + r2_cost
@@ -279,54 +281,35 @@ class MartingaleCalculator:
         fill_price_dollars = fill_price_cents / 100
         print(f"{timestamp} [CALC ]   Assumed fill price: {fill_price_cents}c (with {slippage_cents}c slippage)")
 
-        # Calculate net profit per contract AFTER fees at fill price
-        net_profit_per_contract = MarketScanner.calc_net_profit(fill_price_cents)
+        # Use NET profit (gross - Kalshi fee) to TRULY recover
+        # Kalshi fee formula: 0.07 × price × (1-price) ≈ $0.01-0.02 at our prices
         fee_per_contract = MarketScanner.calc_fee(fill_price_cents)
-        print(f"{timestamp} [CALC ]   Net profit per contract: ${net_profit_per_contract:.4f}")
-        print(f"{timestamp} [CALC ]   Fee per contract: ${fee_per_contract:.4f}")
+        net_profit_per_contract = (1.0 - fill_price_dollars) - fee_per_contract
+        print(f"{timestamp} [CALC ]   Net profit per contract: ${net_profit_per_contract:.4f} (fee: ${fee_per_contract:.2f})")
 
         if net_profit_per_contract <= 0:
-            print(f"{timestamp} [CALC ]   REJECTED: Net profit <= 0 at {fill_price_cents}c")
-            return None  # Can't recover at this price
+            print(f"{timestamp} [CALC ]   REJECTED: Cannot profit at {fill_price_cents}c after fees")
+            return None
 
-        # LOSS-ONLY RECOVERY with slippage/fee buffer
-        # We need contracts where: contracts * net_profit >= total_loss
-        # But we also need to account for the fee on THIS bet
-        # Iterate to find exact contracts needed
+        # RECOVERY: contracts = loss * 1.10 / net_profit
+        # 10% buffer covers up to 2c slippage
+        recovery_target = self.state.total_loss_dollars * 1.10
+        contracts = math.ceil(recovery_target / net_profit_per_contract)
 
-        print(f"{timestamp} [CALC ]   Iterating to find exact contracts needed...")
-        for contracts in range(1, 10000):
-            # Calculate what we'd actually net if we win
-            cost = contracts * fill_price_dollars
-            fee = MarketScanner.calc_fee(fill_price_cents) * contracts
-            gross_payout = contracts * 1.0  # $1 per contract if win
-            net_profit = gross_payout - cost - fee
+        print(f"{timestamp} [CALC ]   Recovery target: ${self.state.total_loss_dollars:.2f} × 1.10 = ${recovery_target:.2f}")
+        print(f"{timestamp} [CALC ]   Contracts = ${recovery_target:.2f} / ${net_profit_per_contract:.4f} = {contracts}")
 
-            # Do we recover enough?
-            if net_profit >= self.state.total_loss_dollars:
-                break
-
-        contracts = max(1, contracts)  # At least 1 contract
-
-        # Calculate actual costs at intended price (for display)
+        # Calculate costs
         cost = contracts * (entry_price_cents / 100)
-        total_risk = self.state.total_loss_dollars + cost
-        profit_if_win = contracts * net_profit_per_contract
-
-        # Log the final calculation
         actual_cost = contracts * fill_price_dollars
-        actual_fee = MarketScanner.calc_fee(fill_price_cents) * contracts
-        actual_net = (contracts * 1.0) - actual_cost - actual_fee
-        buffer = actual_net - self.state.total_loss_dollars
+        total_risk = self.state.total_loss_dollars + actual_cost
+        net_profit_if_win = contracts * net_profit_per_contract
 
         print(f"{timestamp} [CALC ]   RECOVERY BET CALCULATED:")
         print(f"{timestamp} [CALC ]     Contracts: {contracts}")
         print(f"{timestamp} [CALC ]     Cost at fill: ${actual_cost:.2f}")
-        print(f"{timestamp} [CALC ]     Fee: ${actual_fee:.2f}")
-        print(f"{timestamp} [CALC ]     Gross payout if win: ${contracts * 1.0:.2f}")
-        print(f"{timestamp} [CALC ]     Net profit if win: ${actual_net:.2f}")
-        print(f"{timestamp} [CALC ]     Recovery target: ${self.state.total_loss_dollars:.2f}")
-        print(f"{timestamp} [CALC ]     Buffer (net - target): ${buffer:+.2f}")
+        print(f"{timestamp} [CALC ]     Net profit if win: ${net_profit_if_win:.2f}")
+        print(f"{timestamp} [CALC ]     Total risk (cumulative): ${total_risk:.2f}")
 
         return MartingaleBet(
             bet_number=self.current_bet_number,
@@ -334,7 +317,7 @@ class MartingaleCalculator:
             cost_dollars=cost,
             total_risk_dollars=total_risk,
             entry_price_cents=entry_price_cents,
-            net_profit_if_win=profit_if_win,
+            net_profit_if_win=gross_profit_if_win,
         )
 
     def can_survive_full_range(self, bankroll: float, min_price: int = 80, max_price: int = 90) -> bool:

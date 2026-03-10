@@ -403,24 +403,25 @@ class Trader:
                 )
                 return False
 
-            # Filter 2: BTC distance filter (0.15% minimum)
+            # Filter 2: BTC distance filter (only if enabled - 0 = disabled)
             min_distance = self.config.trading.min_btc_distance_pct
-            passes, reason, btc_price = KrakenClient.passes_distance_filter(
-                opportunity.floor_strike,
-                opportunity.side,
-                min_distance
-            )
-
-            if not passes:
-                recovery_target = self.tracker.martingale.get_recovery_target_cents() / 100
-                self.log(
-                    f"RECOVERY MODE: Distance filter failed - {reason} | "
-                    f"Need ${recovery_target:.2f} to recover",
-                    "WARN"
+            if min_distance > 0:
+                passes, reason, btc_price = KrakenClient.passes_distance_filter(
+                    opportunity.floor_strike,
+                    opportunity.side,
+                    min_distance
                 )
-                return False
 
-            self.log(f"RECOVERY MODE: {reason} | BTC ${btc_price:,.2f}", "INFO")
+                if not passes:
+                    recovery_target = self.tracker.martingale.get_recovery_target_cents() / 100
+                    self.log(
+                        f"RECOVERY MODE: Distance filter failed - {reason} | "
+                        f"Need ${recovery_target:.2f} to recover",
+                        "WARN"
+                    )
+                    return False
+
+                self.log(f"RECOVERY MODE: {reason} | BTC ${btc_price:,.2f}", "INFO")
 
         # === OPPORTUNITY FOUND - LOG PROMINENTLY ===
         print("=" * 60)
