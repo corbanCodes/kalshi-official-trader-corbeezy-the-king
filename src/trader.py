@@ -285,19 +285,23 @@ class Trader:
                         result = market.get('result')
                         if result:
                             elapsed = time.time() - start_time
+                            print(f"[SETTLED] Official result: {result.upper()} (took {elapsed:.1f}s)")
                             self.log(f"Official settlement received after {elapsed:.1f}s ({attempts} polls)", "SETTLE")
                             return result
 
                 # Not settled yet, wait and try again
                 elapsed = time.time() - start_time
                 if attempts % 6 == 0:  # Log every 30 seconds
+                    print(f"[POLLING] Waiting for settlement... {elapsed:.0f}s elapsed")
                     self.log(f"Waiting for official settlement... ({elapsed:.0f}s elapsed)", "SETTLE")
                 time.sleep(poll_interval)
 
             except Exception as e:
+                print(f"[POLL ERROR] {e}")
                 self.log(f"Settlement poll error: {e}", "WARN")
                 time.sleep(poll_interval)
 
+        print(f"[TIMEOUT] No settlement after {max_wait}s!")
         return None
 
     def process_settlement(self, trade: TradeRecord, tracked: TrackedTrade):
@@ -328,6 +332,7 @@ class Trader:
         result = self.get_official_settlement(tracked.ticker, max_wait=180, poll_interval=5)
 
         if not result:
+            print("[FALLBACK] Kalshi settlement timeout - checking bankroll change...")
             self.log("CRITICAL: Timeout waiting for Kalshi settlement!", "ERROR")
             self.log("Falling back to bankroll change detection...", "WARN")
 
@@ -338,9 +343,11 @@ class Trader:
 
             if delta > 0:
                 result = tracked.side  # We won
+                print(f"[FALLBACK] Bankroll +${delta:.2f} -> WIN")
                 self.log(f"Bankroll increased ${delta:.2f} -> assuming WIN", "WARN")
             else:
                 result = "yes" if tracked.side == "no" else "no"  # We lost
+                print(f"[FALLBACK] Bankroll ${delta:.2f} -> LOSS")
                 self.log(f"Bankroll decreased ${delta:.2f} -> assuming LOSS", "WARN")
 
         self.log(f"OFFICIAL RESULT from Kalshi: {result.upper()}", "SETTLE")

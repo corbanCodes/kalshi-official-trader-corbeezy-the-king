@@ -76,3 +76,6 @@
 [2026-03-10 21:16:43]   BTC at close: $70,067.10
 [2026-03-10 21:16:43]   Settlement delay: 103.5 seconds after close
 [2026-03-10 21:16:43] ============================================================
+[2026-03-10 21:29:57] >>> WINDOW CLOSING: KXBTC15M-26MAR102130-30 in 3.7s | BTC: $70,082.00 | Strike: $70,119.85
+[2026-03-10 21:30:13] ACTIVE: KXBTC15M-26MAR102145-45 | Strike: $70,033.63 | Closes: 2026-03-11T01:45:00Z
+[2026-03-10 21:31:02] WAITING for settlement: KXBTC15M-26MAR102130-30 (closed 61s ago)
