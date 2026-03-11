@@ -13,7 +13,9 @@
       "Bash(open:*)",
       "Bash(python -m py_compile:*)",
       "WebSearch",
-      "WebFetch(domain:docs.kalshi.com)"
+      "WebFetch(domain:docs.kalshi.com)",
+      "Bash(source:*)",
+      "Bash(python:*)"
     ]
   }
 }

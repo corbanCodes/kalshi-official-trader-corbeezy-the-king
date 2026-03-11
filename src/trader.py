@@ -75,7 +75,7 @@ class Trader:
             limit_offset=self.config.trading.limit_order_offset,
         )
 
-        # Trade tracker for exact payout calculations with Kraken settlement
+        # Trade tracker for exact payout calculations with Kalshi official settlement
         self.tracker = TradeTracker(data_dir=self.config.data_dir)
 
         # State
@@ -247,8 +247,61 @@ class Trader:
 
         return (trade, tracked)
 
+    def get_official_settlement(self, ticker: str, max_wait: int = 180, poll_interval: int = 5) -> Optional[str]:
+        """
+        Poll Kalshi's settled markets API for the official result.
+
+        This is the SAME method the multi-crypto scraper uses - authoritative source.
+
+        Args:
+            ticker: The market ticker to check
+            max_wait: Maximum seconds to wait for settlement (default 180 = 3 min)
+            poll_interval: Seconds between polls (default 5)
+
+        Returns:
+            'yes' or 'no' if settled, None if timeout
+        """
+        import requests
+
+        KALSHI_API = "https://api.elections.kalshi.com/trade-api/v2"
+        series_ticker = "KXBTC15M"
+
+        start_time = time.time()
+        attempts = 0
+
+        while (time.time() - start_time) < max_wait:
+            attempts += 1
+            try:
+                resp = requests.get(
+                    f"{KALSHI_API}/markets",
+                    params={"series_ticker": series_ticker, "status": "settled", "limit": 20},
+                    timeout=10
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                for market in data.get('markets', []):
+                    if market.get('ticker') == ticker:
+                        result = market.get('result')
+                        if result:
+                            elapsed = time.time() - start_time
+                            self.log(f"Official settlement received after {elapsed:.1f}s ({attempts} polls)", "SETTLE")
+                            return result
+
+                # Not settled yet, wait and try again
+                elapsed = time.time() - start_time
+                if attempts % 6 == 0:  # Log every 30 seconds
+                    self.log(f"Waiting for official settlement... ({elapsed:.0f}s elapsed)", "SETTLE")
+                time.sleep(poll_interval)
+
+            except Exception as e:
+                self.log(f"Settlement poll error: {e}", "WARN")
+                time.sleep(poll_interval)
+
+        return None
+
     def process_settlement(self, trade: TradeRecord, tracked: TrackedTrade):
-        """Process trade settlement using Kalshi's official settlement API."""
+        """Process trade settlement using Kalshi's OFFICIAL result API."""
         self.log("=" * 60, "SETTLE")
         self.log(f"SETTLEMENT PROCESS STARTED for {tracked.ticker}", "SETTLE")
         self.log(f"  Our side: {tracked.side.upper()}", "SETTLE")
@@ -264,48 +317,44 @@ class Trader:
         if wait_seconds > 0:
             print(f"[WAITING] {wait_seconds:.0f}s until market closes...")
             self.log(f"Waiting {wait_seconds:.0f}s for market close...", "SETTLE")
-            time.sleep(wait_seconds + 5)  # Add 5 second buffer for settlement
+            time.sleep(wait_seconds)
 
-        # Immediate settlement using Kraken price (no waiting for Kalshi API)
-        print("[SETTLEMENT] Fetching BTC price from Kraken for immediate settlement...")
-        self.log("Fetching Kraken BTC price for settlement...", "SETTLE")
+        # Wait for Kalshi to settle (~90-105 seconds typically)
+        print("[SETTLEMENT] Waiting for Kalshi official settlement...")
+        self.log("Polling Kalshi for official settlement result...", "SETTLE")
+        self.log("(Kalshi typically takes 90-105 seconds to settle)", "SETTLE")
 
-        btc_price = KrakenClient.get_btc_price()
-        if not btc_price:
-            self.log("CRITICAL: Cannot get BTC price from Kraken!", "ERROR")
-            self.log("Cannot determine settlement - trade left unsettled", "ERROR")
-            return
+        # Poll for official result
+        result = self.get_official_settlement(tracked.ticker, max_wait=180, poll_interval=5)
 
-        self.log(f"Kraken BTC price: ${btc_price:,.2f}", "SETTLE")
-        self.log(f"Strike price: ${tracked.floor_strike:,.2f}", "SETTLE")
+        if not result:
+            self.log("CRITICAL: Timeout waiting for Kalshi settlement!", "ERROR")
+            self.log("Falling back to bankroll change detection...", "WARN")
 
-        # Determine result from Kraken price
-        # For NO bets: win if BTC < strike
-        # For YES bets: win if BTC >= strike
-        if tracked.side == "no":
-            result = "no" if btc_price < tracked.floor_strike else "yes"
-            comparison = '<' if btc_price < tracked.floor_strike else '>='
-            self.log(f"NO bet: BTC ${btc_price:,.2f} {comparison} strike ${tracked.floor_strike:,.2f} -> {result.upper()}", "SETTLE")
-        else:
-            result = "yes" if btc_price >= tracked.floor_strike else "no"
-            comparison = '>=' if btc_price >= tracked.floor_strike else '<'
-            self.log(f"YES bet: BTC ${btc_price:,.2f} {comparison} strike ${tracked.floor_strike:,.2f} -> {result.upper()}", "SETTLE")
+            # Fallback: check bankroll change
+            old_bankroll = self.state.bankroll
+            self.refresh_bankroll()
+            delta = self.state.bankroll - old_bankroll
 
-        # Store the BTC price used for settlement
-        tracked.settlement_btc_price = btc_price
+            if delta > 0:
+                result = tracked.side  # We won
+                self.log(f"Bankroll increased ${delta:.2f} -> assuming WIN", "WARN")
+            else:
+                result = "yes" if tracked.side == "no" else "no"  # We lost
+                self.log(f"Bankroll decreased ${delta:.2f} -> assuming LOSS", "WARN")
 
-        # Determine win/loss
+        self.log(f"OFFICIAL RESULT from Kalshi: {result.upper()}", "SETTLE")
+
         we_won = (tracked.side == result)
         self.log(f"RESULT: Market settled {result.upper()}, we bet {tracked.side.upper()} -> {'WIN' if we_won else 'LOSS'}", "SETTLE")
-        self.log(f"Settlement source: KRAKEN (BTC ${btc_price:,.2f})", "SETTLE")
 
         # Get actual bankroll from Kalshi
         old_bankroll = self.state.bankroll
         self.refresh_bankroll()
         bankroll_after_cents = int(self.state.bankroll * 100)
-        self.log(f"Bankroll change: ${old_bankroll:.2f} -> ${self.state.bankroll:.2f} (delta: ${self.state.bankroll - old_bankroll:+.2f})", "SETTLE")
+        self.log(f"Bankroll: ${old_bankroll:.2f} -> ${self.state.bankroll:.2f} (delta: ${self.state.bankroll - old_bankroll:+.2f})", "SETTLE")
 
-        # Settle using Kalshi's official result
+        # Record settlement
         self.log("Recording settlement in trade tracker...", "SETTLE")
         self.tracker.settle_trade_with_result(tracked, result, bankroll_after_cents)
 
@@ -457,7 +506,7 @@ class Trader:
 
         trade, tracked = result
 
-        # Process settlement with Kraken-based instant determination
+        # Process settlement with Kalshi official API
         self.process_settlement(trade, tracked)
 
         return True
@@ -545,6 +594,23 @@ class Trader:
         self.tracker.save()
         self._sync_martingale_from_tracker()
         self.log("Recovery state reset. Next bet will be a fresh base bet.", "INFO")
+
+    def trigger_manual_recovery(self, loss_dollars: float, bankroll_dollars: float = None):
+        """Manually trigger recovery mode - calls EXACT same record_loss() as normal losses."""
+        self.log("=" * 60, "WARN")
+        self.log("MANUAL RECOVERY TRIGGERED", "WARN")
+
+        # Call the EXACT same function that normal losses use
+        loss_cents = int(loss_dollars * 100)
+        self.tracker.martingale.record_loss(loss_cents=loss_cents, base_profit_cents=0)
+        self.tracker.save()
+        self._sync_martingale_from_tracker()
+
+        if bankroll_dollars is not None:
+            self.effective_bankroll = bankroll_dollars
+
+        self.log(f"  Loss: ${loss_dollars:.2f} | Next bet: RECOVERY #2", "WARN")
+        self.log("=" * 60, "WARN")
 
     def show_status(self):
         """Print current status."""

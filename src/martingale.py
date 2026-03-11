@@ -317,7 +317,7 @@ class MartingaleCalculator:
             cost_dollars=cost,
             total_risk_dollars=total_risk,
             entry_price_cents=entry_price_cents,
-            net_profit_if_win=gross_profit_if_win,
+            net_profit_if_win=net_profit_if_win,
         )
 
     def can_survive_full_range(self, bankroll: float, min_price: int = 80, max_price: int = 90) -> bool:

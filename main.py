@@ -317,6 +317,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.handle_set_apportioned()
         elif self.path == "/api/reset-recovery":
             self.handle_reset_recovery()
+        elif self.path == "/api/trigger-recovery":
+            self.handle_trigger_recovery()
         else:
             self.send_error(404)
 
@@ -414,6 +416,48 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self.send_json({"success": False, "error": str(e)})
 
+    def handle_trigger_recovery(self):
+        """Handle manually triggering recovery mode."""
+        global GLOBAL_TRADER
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(body) if body else {}
+
+            loss_dollars = data.get('loss_dollars')
+            bankroll_dollars = data.get('bankroll_dollars')
+
+            if not loss_dollars or loss_dollars <= 0:
+                self.send_json({"success": False, "error": "Invalid loss amount"})
+                return
+
+            if GLOBAL_TRADER:
+                # Use the EXACT same code path as normal losses
+                GLOBAL_TRADER.trigger_manual_recovery(loss_dollars, bankroll_dollars)
+
+                # Update dashboard state to reflect recovery mode
+                DASHBOARD_STATE["consecutive_losses"] = 1
+                DASHBOARD_STATE["in_recovery"] = True
+                DASHBOARD_STATE["recovery_target"] = loss_dollars
+                DASHBOARD_STATE["recovery_stage"] = 1
+
+                if bankroll_dollars:
+                    DASHBOARD_STATE["effective_bankroll"] = bankroll_dollars
+                    DASHBOARD_STATE["starting_bankroll"] = bankroll_dollars
+
+                log_activity(f"MANUAL RECOVERY TRIGGERED: ${loss_dollars:.2f} to recover")
+
+                self.send_json({
+                    "success": True,
+                    "message": f"Recovery mode active. Recovering ${loss_dollars:.2f}",
+                    "next_bet": 2,
+                    "remaining_attempts": 2,
+                })
+            else:
+                self.send_json({"success": False, "error": "Trader not initialized"})
+        except Exception as e:
+            self.send_json({"success": False, "error": str(e)})
+
     def send_json(self, data):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -498,6 +542,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
         <strong style="color:#ff6b6b;">RECOVERY MODE ACTIVE</strong>
         <span id="recoveryInfo" style="margin-left:20px;">Stage 1 - Need to recover $0.00</span>
         <button onclick="resetRecovery()" class="btn" style="background:#ff6b6b; color:#fff; margin-left:20px; padding:8px 15px; font-size:0.85rem;">Reset Recovery</button>
+    </div>
+
+    <div class="trades" style="margin-bottom:20px; border: 1px solid #ffd93d;">
+        <h3 style="margin-bottom:15px; color:#ffd93d;">Manual Recovery Trigger</h3>
+        <p style="color:#888; font-size:0.85rem; margin-bottom:15px;">Use this to manually enter recovery mode. Uses the EXACT same code as normal losses. Next bet will be recovery bet #2.</p>
+        <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:20px; align-items:end;">
+            <div>
+                <label style="color:#888; font-size:0.85rem;">Loss to Recover ($)</label>
+                <input type="number" id="manualLossInput" placeholder="e.g. 0.80" step="0.01"
+                    style="width:100%; padding:10px; background:#0a0a0a; border:1px solid #ffd93d; border-radius:5px; color:#e0e0e0; font-family:monospace; margin-top:5px;">
+            </div>
+            <div>
+                <label style="color:#888; font-size:0.85rem;">Bankroll Override (optional)</label>
+                <input type="number" id="manualBankrollInput" placeholder="Leave empty for current" step="0.01"
+                    style="width:100%; padding:10px; background:#0a0a0a; border:1px solid #333; border-radius:5px; color:#e0e0e0; font-family:monospace; margin-top:5px;">
+            </div>
+            <div>
+                <button onclick="triggerManualRecovery()" class="btn" style="background:#ffd93d; color:#000; width:100%;">Trigger Recovery Mode</button>
+            </div>
+        </div>
+        <div id="manualRecoveryStatus" style="margin-top:10px; font-size:0.85rem; color:#888;"></div>
     </div>
 
     <div class="trades" style="margin-bottom:20px;">
@@ -602,6 +667,49 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 .catch(err => alert('Error: ' + err));
         }
 
+        function triggerManualRecovery() {
+            const lossInput = document.getElementById('manualLossInput').value;
+            const bankrollInput = document.getElementById('manualBankrollInput').value;
+            const statusEl = document.getElementById('manualRecoveryStatus');
+
+            if (!lossInput || parseFloat(lossInput) <= 0) {
+                statusEl.innerHTML = '<span style="color:#ff6b6b;">Please enter a valid loss amount</span>';
+                return;
+            }
+
+            const loss = parseFloat(lossInput);
+            const bankroll = bankrollInput ? parseFloat(bankrollInput) : null;
+
+            if (!confirm('Trigger recovery mode to recover $' + loss.toFixed(2) + '?\\n\\nNext bet will be RECOVERY BET #1 (Bet #2 in sequence) using the exact same code path as normal losses.')) {
+                return;
+            }
+
+            statusEl.innerHTML = '<span style="color:#ffd93d;">Triggering recovery mode...</span>';
+
+            fetch('/api/trigger-recovery', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    loss_dollars: loss,
+                    bankroll_dollars: bankroll
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    statusEl.innerHTML = '<span style="color:#6bcb77;">Recovery mode activated! ' + data.message + '</span>';
+                    document.getElementById('manualLossInput').value = '';
+                    document.getElementById('manualBankrollInput').value = '';
+                    updateStatus();
+                } else {
+                    statusEl.innerHTML = '<span style="color:#ff6b6b;">Error: ' + data.error + '</span>';
+                }
+            })
+            .catch(err => {
+                statusEl.innerHTML = '<span style="color:#ff6b6b;">Error: ' + err + '</span>';
+            });
+        }
+
         function updateStatus() {
             fetch('/api/status')
                 .then(r => r.json())
@@ -649,7 +757,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         const target = (data.recovery_target || 0).toFixed(2);
                         document.getElementById('recoveryInfo').textContent =
                             'Stage ' + stage + ' of 2 - Need to recover $' + target +
-                            ' | Using 85c cap + 0.15% distance filter';
+                            ' | Using 87c cap';
                     } else {
                         recoveryBanner.style.display = 'none';
                     }
